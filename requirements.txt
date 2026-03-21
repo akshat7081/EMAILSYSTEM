@@ -1,0 +1,14 @@
+python-telegram-bot>=20.0
+pytesseract
+Pillow
+numpy
+apscheduler
+Flask
+pandas
+psutil
+urllib3
+requests
+nest_asyncio
+markupsafe
+python-jobspy
+pytz

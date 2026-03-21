@@ -1,0 +1,21 @@
+# Secret Environment Variables (never push to GitHub/Replit!)
+.env
+
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Temporary test and debug logs
+tmp_*.py
+test_*.py
+*.txt
+*.log
+
+# Except certain necessary txt files
+!requirements.txt
+
+# JSON Local Database / Queues
+mail_queue.json
+data/
