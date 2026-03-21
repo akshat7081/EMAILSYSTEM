@@ -1,5 +1,5 @@
-# Secret Environment Variables (never push to GitHub/Replit!)
-.env
+# Secret Environment Variables (user explicitly requested pushing)
+
 
 # Python Cache
 __pycache__/
