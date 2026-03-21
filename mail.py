@@ -7177,6 +7177,10 @@ async def run_bot():
     app.add_handler(MessageHandler(message_filter, handle_message))
 
     app.add_error_handler(error_handler)
+    
+    # ─── CRITICAL: Start Flask Server for Replit 24/7 Keep-Alive ───
+    keep_alive()
+    
     await app.initialize()
     await app.start()
     print("✅ Bot initialized")
