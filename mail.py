@@ -3105,7 +3105,10 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             for tid, info in load_templates().items():
                 buttons.append([InlineKeyboardButton(f"{info['emoji']} {info['name']}", callback_data=f"tmpl_{tid}_{data_key}")])
             
-            buttons.append([InlineKeyboardButton("🚀 Send Instantly (Normal)", callback_data=f"israw_{data_key}")])
+            buttons.append([
+                InlineKeyboardButton("🚀 Send Instantly", callback_data=f"israw_{data_key}"),
+                InlineKeyboardButton("⏰ Schedule 8 AM", callback_data=f"sched_{data_key}")
+            ])
             kb = InlineKeyboardMarkup(buttons)
 
             await safe_edit(status_msg, response, parse_mode="Markdown", reply_markup=kb)
@@ -4471,9 +4474,19 @@ async def cb_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await m.reply_text(f"🚀 *Instant Bulk Dispatch Initiated* ({len(pending)} emails)...\n\nProcessing, please wait.", parse_mode="Markdown")
             
             sent_count = 0
+            skipped = 0
             for item in pending:
+                email_addr = item.get("email", "")
+                # Dedup guard: skip if already sent
+                st = get_email_status(email_addr)
+                if st == "sent":
+                    skipped += 1
+                    item["status"] = "sent"
+                    item["delivery_status"] = "already_sent"
+                    continue
+                
                 success, msg_text = instant_send_email(
-                    to_email=item.get("email"),
+                    to_email=email_addr,
                     company=item.get("company"),
                     role=item.get("role", ""),
                     template_id=item.get("template", "normal")
@@ -4486,7 +4499,8 @@ async def cb_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             
             save_mail_queue(queue)
             
-            await m.reply_text(f"✅ *Instant Bulk Dispatch Complete!*\n\n{sent_count}/{len(pending)} emails successfully sent natively from Replit.", parse_mode="Markdown")
+            skip_msg = f"\n⏭️ Skipped {skipped} (already sent)" if skipped else ""
+            await m.reply_text(f"✅ *Instant Bulk Dispatch Complete!*\n\n{sent_count}/{len(pending)} emails successfully sent.{skip_msg}", parse_mode="Markdown")
 
         elif d == "m_mst":
             ms = get_mail_stats()
@@ -4895,12 +4909,15 @@ async def cb_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         if em and em != "nan":
                             first_email = em.split(",")[0].strip()
                             if is_valid_email(first_email):
+                                # Dedup guard
+                                if is_email_already_processed(first_email):
+                                    st = get_email_status(first_email)
+                                    await m.reply_text(f"⚠️ *Already Processed!*\n\n`{first_email}` was already {st}.\nNo duplicate sent.", parse_mode="Markdown")
+                                    return
                                 await m.reply_text(f"🚀 *Instant Send Triggered* for `{first_email}`...\nSending now...", parse_mode="Markdown")
                                 success, msg_text = instant_send_email(first_email, co, ti, "normal")
                                 if success:
-                                    # Still add to queue to mark as sent for deduplication!
                                     add_to_mail_queue(first_email, co, ti, "instant_send", "CRITICAL")
-                                    # update local status manually
                                     queue = load_mail_queue()
                                     for q_item in queue:
                                         if q_item.get("email", "").lower() == first_email.lower() and q_item.get("status") == "pending":
@@ -4932,6 +4949,12 @@ async def cb_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if emails:
                 first_email = emails[0].strip()
                 if is_valid_email(first_email):
+                    # Dedup guard
+                    if is_email_already_processed(first_email):
+                        st = get_email_status(first_email)
+                        await q.edit_message_text(f"⚠️ *Already Processed!*\n\n`{first_email}` was already {st}.\nNo duplicate sent.", parse_mode="Markdown")
+                        ctx.user_data.get("pending_mail_data", {}).pop(data_key, None)
+                        return
                     await q.edit_message_text(f"🚀 *Instant Send Triggered* for `{first_email}`...\nSending now...", parse_mode="Markdown")
                     success, msg_text = instant_send_email(first_email, company, role, "normal")
                     if success:
@@ -4951,6 +4974,38 @@ async def cb_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             else:
                 await m.reply_text("📭 No email found in data.")
                 
+            ctx.user_data.get("pending_mail_data", {}).pop(data_key, None)
+
+        elif d.startswith("sched_"):
+            data_key = d[6:]
+            pending = ctx.user_data.get("pending_mail_data", {}).get(data_key)
+            if not pending:
+                await q.edit_message_text("❌ Data expired or already processed.")
+                return
+            
+            emails = pending.get("emails", [])
+            company = pending.get("company", "Unknown")
+            role = pending.get("role", "Unknown")
+            
+            added = 0
+            skipped = 0
+            for e in emails:
+                e = e.strip()
+                if e and is_valid_email(e):
+                    if is_email_already_processed(e):
+                        skipped += 1
+                        continue
+                    if add_to_mail_queue(e, company, role, "scheduled", "normal"):
+                        added += 1
+            
+            skip_msg = f"\n⏭️ Skipped {skipped} (already sent)" if skipped else ""
+            await q.edit_message_text(
+                f"⏰ *Scheduled for 8 AM!*\n\n"
+                f"✅ {added} email(s) queued\n"
+                f"🏢 Company: *{escape_md(company)}*\n"
+                f"📤 PythonAnywhere will send at 8:00 AM IST{skip_msg}",
+                parse_mode="Markdown"
+            )
             ctx.user_data.get("pending_mail_data", {}).pop(data_key, None)
 
         else:
@@ -5078,7 +5133,10 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             for tid, info in load_templates().items():
                 buttons.append([InlineKeyboardButton(f"{info['emoji']} {info['name']}", callback_data=f"tmpl_{tid}_{data_key}")])
             
-            buttons.append([InlineKeyboardButton("🚀 Send Instantly (Normal)", callback_data=f"israw_{data_key}")])
+            buttons.append([
+                InlineKeyboardButton("🚀 Send Instantly", callback_data=f"israw_{data_key}"),
+                InlineKeyboardButton("⏰ Schedule 8 AM", callback_data=f"sched_{data_key}")
+            ])
             kb = InlineKeyboardMarkup(buttons)
             
             status_lines = []
