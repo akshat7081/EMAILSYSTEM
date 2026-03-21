@@ -3104,6 +3104,8 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             buttons = []
             for tid, info in load_templates().items():
                 buttons.append([InlineKeyboardButton(f"{info['emoji']} {info['name']}", callback_data=f"tmpl_{tid}_{data_key}")])
+            
+            buttons.append([InlineKeyboardButton("🚀 Send Instantly (Normal)", callback_data=f"israw_{data_key}")])
             kb = InlineKeyboardMarkup(buttons)
 
             await safe_edit(status_msg, response, parse_mode="Markdown", reply_markup=kb)
@@ -4916,6 +4918,41 @@ async def cb_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 except Exception as e:
                     await m.reply_text(f"⚠️ Error: {str(e)[:80]}")
 
+        elif d.startswith("israw_"):
+            data_key = d[6:]
+            pending = ctx.user_data.get("pending_mail_data", {}).get(data_key)
+            if not pending:
+                await q.edit_message_text("❌ Data expired or already processed.")
+                return
+            
+            emails = pending.get("emails", [])
+            company = pending.get("company", "Unknown")
+            role = pending.get("role", "Unknown")
+            
+            if emails:
+                first_email = emails[0].strip()
+                if is_valid_email(first_email):
+                    await q.edit_message_text(f"🚀 *Instant Send Triggered* for `{first_email}`...\nSending now...", parse_mode="Markdown")
+                    success, msg_text = instant_send_email(first_email, company, role, "normal")
+                    if success:
+                        add_to_mail_queue(first_email, company, role, "instant_send", "CRITICAL")
+                        queue = load_mail_queue()
+                        for q_item in queue:
+                            if q_item.get("email", "").lower() == first_email.lower() and q_item.get("status") == "pending":
+                                q_item["status"] = "sent"
+                                q_item["delivery_status"] = "success"
+                        save_mail_queue(queue)
+                        
+                        await m.reply_text(f"✅ *Email Instantly Sent!*\n\nTo: {first_email}\nCompany: {company}", parse_mode="Markdown")
+                    else:
+                        await m.reply_text(f"❌ *Failed to send:*\n{msg_text[:100]}", parse_mode="Markdown")
+                else:
+                    await m.reply_text("❌ Invalid email format")
+            else:
+                await m.reply_text("📭 No email found in data.")
+                
+            ctx.user_data.get("pending_mail_data", {}).pop(data_key, None)
+
         else:
             await q.answer("Unknown action")
 
@@ -5041,6 +5078,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             for tid, info in load_templates().items():
                 buttons.append([InlineKeyboardButton(f"{info['emoji']} {info['name']}", callback_data=f"tmpl_{tid}_{data_key}")])
             
+            buttons.append([InlineKeyboardButton("🚀 Send Instantly (Normal)", callback_data=f"israw_{data_key}")])
             kb = InlineKeyboardMarkup(buttons)
             
             status_lines = []
