@@ -20,6 +20,9 @@ from PIL import Image as PILImage
 
 from datetime import datetime, timedelta
 from threading import Thread, RLock
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 
 
@@ -2277,6 +2280,64 @@ def calculate_mail_priority(email, company, source, role=""):
         return "LOW"
 
 
+def instant_send_email(to_email, company, role, template_id="normal"):
+    """
+    Bypasses PA queue and sends immediately from Replit natively using SMTP.
+    Used for 🚀 Instant Send and 📤 Send Now (Bulk).
+    """
+    if not GMAIL_EMAIL or not GMAIL_APP_PASSWORD:
+        return False, "❌ Error: GMAIL_EMAIL or GMAIL_APP_PASSWORD is not set in Environments."
+
+    name = os.environ.get("YOUR_NAME", "Akshat Tripathi")
+    phone = os.environ.get("PHONE", "+91-7081484808")
+    linkedin = os.environ.get("LINKEDIN", "linkedin.com/in/akshattripathi7081")
+    university = os.environ.get("UNIVERSITY", "Dr. A.P.J. Abdul Kalam Technical University")
+    degree = os.environ.get("DEGREE", "BCA")
+    
+    if company in ("Unknown Company", "N/A", "", "nan", None):
+        company = "your esteemed organization"
+
+    # Template Logic (Identical to bot.py)
+    if template_id == "research":
+        subject = f"Application for Research Associate Role - {name}"
+        body = f"Dear Hiring Team,\n\nI am writing to express my strong interest in the Research Associate position at your organization. With a background in {degree} and a keen interest in data-driven research and technical documentation, I am confident in my ability to contribute to your research projects.\n\nMy Proficiency includes:\n- Python for Data Analysis & Web Scraping\n- Technical Writing & Documentation\n- Advanced SQL for Data Retrieval\n- Quantitative & Qualitative Research Methodology\n\nI am an immediate joiner and eager to discuss how my skill set aligns with your organization's requirements. My resume is attached for your review.\n\nBest regards,\n{name}\n{linkedin}"
+    elif template_id == "analytics":
+        subject = f"Data Analyst/MIS Associate Application | {name} | {degree}"
+        body = f"Hi Team,\n\nI am seeking an entry-level opportunity in Data Analytics at your organization. As a {degree} graduate with strong foundations in SQL, Excel, and Python, I am passionate about turning raw data into meaningful business insights.\n\nKey Technical Skills:\n- SQL (Joins, Subqueries, Optimization)\n- Python (Pandas, NumPy, Matplotlib)\n- Microsoft Excel (VLOOKUP, Pivots, Macros)\n- Power BI / Tableau (Basics)\n\nI am available for an immediate start and would welcome the opportunity to interview with your team. Please find my resume attached.\n\nRegards,\n{name}\nPhone: {phone}"
+    elif template_id == "followup":
+        display_role = role if (role and role.lower() not in ("entry-level opportunity", "n/a")) else "the open position"
+        subject = f"Following up on my application for {display_role} - {name}"
+        body = f"Dear Hiring Team,\n\nI recently applied for the {display_role} at your organization and wanted to gently follow up on my application.\n\nI am very excited about the opportunity to contribute my skills to your team. Please let me know if there is any further information or work samples you need from my end to evaluate my candidacy. My resume is attached for your reference.\n\nThank you for your time and continued consideration.\n\nBest regards,\n{name}\n{phone} | {linkedin}"
+    else:
+        subject = f"Application for Entry-Level Opportunity - {name} ({degree} Fresher)"
+        body = f"Respected Hiring Manager,\n\nI am {name}, a recent {degree} graduate from {university}. I am applying for entry-level opportunities at your organization as advertised.\n\nMy Skill Set:\n- Web Development (HTML/CSS, JavaScript)\n- Python Scripting & Automation\n- Basic Database Management (SQL)\n- IT Support & Quality Assurance\n\nI am a quick learner and an immediate joiner (no notice period). I have attached my resume and I am available for an interview at your earliest convenience.\n\nThank you for your consideration.\n\nWarm regards,\n{name}\n{phone} | {linkedin}"
+
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = f"{name} <{GMAIL_EMAIL}>"
+        msg['To'] = to_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain'))
+
+        if os.path.exists(RESUME_FILE):
+            with open(RESUME_FILE, "rb") as f:
+                part = MIMEBase('application', 'octet-stream')
+                part.set_payload(f.read())
+                encoders.encode_base64(part)
+                part.add_header('Content-Disposition', 'attachment; filename="resume.pdf"')
+                msg.attach(part)
+        
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
+        server.login(GMAIL_EMAIL, GMAIL_APP_PASSWORD)
+        server.sendmail(GMAIL_EMAIL, to_email, msg.as_string())
+        server.quit()
+        return True, "Success"
+    except Exception as e:
+        logger.error(f"Instant Send Failed: {e}")
+        return False, str(e)
+
+
 def add_to_mail_queue(email,
                       company,
                       role="",
@@ -3604,8 +3665,10 @@ def job_kb(job):
         rows.append([
             InlineKeyboardButton("📧 Quick Mail",
                                  callback_data="qm_{}".format(jid)),
-            InlineKeyboardButton("📧 Copy", callback_data="em_{}".format(jid)),
+            InlineKeyboardButton("🚀 Instant Send",
+                                 callback_data="is_{}".format(jid)),
         ])
+        rows.append([InlineKeyboardButton("📧 Copy", callback_data="em_{}".format(jid))])
     if url.startswith("http"):
         rows.append([InlineKeyboardButton("🔗 Apply Now →", url=url)])
     return InlineKeyboardMarkup(rows)
@@ -4391,8 +4454,31 @@ async def cb_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await m.edit_text(txt, parse_mode="Markdown", reply_markup=kb)
 
         elif d == "m_ms":
-            await m.reply_text("📤 Mail is sent by PythonAnywhere at 8 AM.\n"
-                               "Use /mailsend for status.")
+            queue = load_mail_queue()
+            pending = [q for q in queue if q.get("status") == "pending"]
+            if not pending:
+                await m.reply_text("📋 Queue is empty. Nothing to send.")
+                return
+
+            await m.reply_text(f"🚀 *Instant Bulk Dispatch Initiated* ({len(pending)} emails)...\n\nProcessing, please wait.", parse_mode="Markdown")
+            
+            sent_count = 0
+            for item in pending:
+                success, msg_text = instant_send_email(
+                    to_email=item.get("email"),
+                    company=item.get("company"),
+                    role=item.get("role", ""),
+                    template_id=item.get("template", "normal")
+                )
+                if success:
+                    item["status"] = "sent"
+                    item["delivery_status"] = "success"
+                    item["added_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    sent_count += 1
+            
+            save_mail_queue(queue)
+            
+            await m.reply_text(f"✅ *Instant Bulk Dispatch Complete!*\n\n{sent_count}/{len(pending)} emails successfully sent natively from Replit.", parse_mode="Markdown")
 
         elif d == "m_mst":
             ms = get_mail_stats()
@@ -4787,6 +4873,42 @@ async def cb_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                             await m.reply_text("📭 No email")
                 except:
                     await m.reply_text("⚠️ Error")
+
+        elif d.startswith("is_"):
+            jid = d[3:]
+            if os.path.exists(JOBS_FILE):
+                try:
+                    df = pd.read_csv(JOBS_FILE)
+                    row = df[df["job_id"].astype(str) == str(jid)]
+                    if not row.empty:
+                        em = str(row["emails"].values[0])
+                        co = safe_str(row["company"].values[0])
+                        ti = safe_str(row["title"].values[0])
+                        if em and em != "nan":
+                            first_email = em.split(",")[0].strip()
+                            if is_valid_email(first_email):
+                                await m.reply_text(f"🚀 *Instant Send Triggered* for `{first_email}`...\nSending now...", parse_mode="Markdown")
+                                success, msg_text = instant_send_email(first_email, co, ti, "normal")
+                                if success:
+                                    # Still add to queue to mark as sent for deduplication!
+                                    add_to_mail_queue(first_email, co, ti, "instant_send", "CRITICAL")
+                                    # update local status manually
+                                    queue = load_mail_queue()
+                                    for q_item in queue:
+                                        if q_item.get("email", "").lower() == first_email.lower() and q_item.get("status") == "pending":
+                                            q_item["status"] = "sent"
+                                            q_item["delivery_status"] = "success"
+                                    save_mail_queue(queue)
+                                    
+                                    await m.reply_text(f"✅ *Email Instantly Sent!*\n\nTo: {first_email}\nCompany: {co}", parse_mode="Markdown")
+                                else:
+                                    await m.reply_text(f"❌ *Failed to send:*\n{msg_text[:100]}", parse_mode="Markdown")
+                            else:
+                                await m.reply_text("❌ Invalid email format")
+                        else:
+                            await m.reply_text("📭 No email")
+                except Exception as e:
+                    await m.reply_text(f"⚠️ Error: {str(e)[:80]}")
 
         else:
             await q.answer("Unknown action")
