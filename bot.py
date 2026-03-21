@@ -143,85 +143,155 @@ def update_status(email, status, attempts=None):
     except Exception as e:
         print(f"Failed to sync status to Replit for {email}: {e}")
 
-# ─── Email Engine (v3.0 Templates) ────────────────────────
+# ─── Email Engine (v4.0 — Synced with mail.py templates) ──
 
-def get_email_content(template_id, company, role):
-    """Generate subject and body based on template (Fix #2, #6)"""
+def _make_greeting(email_addr):
+    """
+    Smart greeting: 'Hello [Name] Ma'am/Sir,' or 'Hello Ma'am/Sir,'
+    Matches mail.py style exactly.
+    """
+    import re
+    if not email_addr or "@" not in str(email_addr):
+        return "Hello Ma'am/Sir,"
+    
+    local = email_addr.split("@")[0]
+    generic = {
+        "hr", "hiring", "career", "careers", "info", "jobs",
+        "recruit", "recruitment", "admin", "contact", "support",
+        "noreply", "no-reply", "enquiry", "hello", "team",
+        "mail", "office", "placement", "apply", "resume",
+        "cv", "talent", "people", "jointeam", "work",
+        "internship", "openings", "vacancy",
+    }
+    
+    parts = re.split(r"[._\-+0-9]", local)
+    name_parts = []
+    for p in parts:
+        if p.lower() not in generic and len(p) > 1 and p.isalpha():
+            name_parts.append(p.capitalize())
+    
+    if name_parts:
+        name = " ".join(name_parts[:2])
+        return f"Hello {name} Ma'am/Sir,"
+    
+    return "Hello Ma'am/Sir,"
 
-    # Template 1: Research Associate
+
+def get_email_content(template_id, company, role, to_email=""):
+    """Generate subject and body — synced with mail.py templates"""
+    greeting = _make_greeting(to_email)
+    name = YOUR_NAME
+    phone = PHONE
+    degree = DEGREE
+    university = UNIVERSITY
+
     if template_id == "research":
-        subject = f"Application for Research Associate Role - {YOUR_NAME}"
-        body = f"""Dear Hiring Team,
+        subject = f"Application for Research Associate Position - {name}"
+        body = f"""{greeting}
 
-I am writing to express my strong interest in the Research Associate position at your organization. With a background in {DEGREE} and a keen interest in data-driven research and technical documentation, I am confident in my ability to contribute to your research projects.
+I hope you are doing well.
 
-My Proficiency includes:
-- Python for Data Analysis & Web Scraping
-- Technical Writing & Documentation
-- Advanced SQL for Data Retrieval
-- Quantitative & Qualitative Research Methodology
+I am writing to express my interest in the Research Associate / Research Assistant position at your organization. I am a {degree} graduate from {university}, and I am keen to contribute to research-driven work.
 
-I am an immediate joiner and eager to discuss how my skill set aligns with your organization's requirements. My resume is attached for your review.
+I bring skills and experience in the following areas:
 
-Best regards,
-{YOUR_NAME}
-{LINKEDIN}"""
+- Data collection, cleaning, and analysis (Python, Excel, SQL)
+- Literature review and academic research methodology
+- Statistical analysis and data interpretation
+- Technical documentation and report writing
+- Survey design, data gathering, and synthesis
+- MS Office proficiency (Word, Excel, PowerPoint)
+- Database management (MySQL, data modelling)
+- Internet research and information compilation
 
-    # Template 2: Data Analytics
-    elif template_id == "analytics":
-        subject = f"Data Analyst/MIS Associate Application | {YOUR_NAME} | {DEGREE}"
-        body = f"""Hi Team,
+I have strong analytical thinking, attention to detail, and the ability to work both independently and in a team. I am a quick learner and passionate about contributing to meaningful research.
 
-I am seeking an entry-level opportunity in Data Analytics at your organization. As a {DEGREE} graduate with strong foundations in SQL, Excel, and Python, I am passionate about turning raw data into meaningful business insights.
+I am an immediate joiner with no notice period. Please find my resume attached for your review. I would sincerely appreciate the opportunity to discuss how my skills can support the research goals at your organization.
 
-Key Technical Skills:
-- SQL (Joins, Subqueries, Optimization)
-- Python (Pandas, NumPy, Matplotlib)
-- Microsoft Excel (VLOOKUP, Pivots, Macros)
-- Power BI / Tableau (Basics)
-
-I am available for an immediate start and would welcome the opportunity to interview with your team. Please find my resume attached.
+Thank you for your time and consideration.
 
 Regards,
-{YOUR_NAME}
-Phone: {PHONE}"""
+{name}
+{phone}"""
 
-    # Template 3: Follow-Up
+    elif template_id == "analytics":
+        subject = f"Application for Data Analyst Position - {name}"
+        body = f"""{greeting}
+
+I hope you are doing well.
+
+I am writing to apply for data analytics opportunities at your organization. I am a {degree} graduate from {university}, with a strong interest in turning data into actionable insights.
+
+I bring hands-on skills in the following areas:
+
+- Python for data analysis (Pandas, NumPy, Matplotlib)
+- SQL (complex queries, joins, aggregations, window functions)
+- Advanced MS Excel (Pivot Tables, VLOOKUP, Power Query, dashboards)
+- Data cleaning, preprocessing, and transformation
+- Data visualization and reporting
+- Statistical analysis and trend identification
+- MIS reporting and business intelligence basics
+- Database management (MySQL, data modelling)
+
+I have worked on projects involving sales data analysis, customer segmentation, automated reporting dashboards, and data cleaning pipelines.
+
+I am open to roles such as Data Analyst, Business Analyst, MIS Analyst, Junior BI Developer, Analytics Executive, or any data-focused entry-level position.
+
+I am an immediate joiner with no notice period. Please find my resume attached for your review. I would be grateful for the opportunity to contribute data-driven insights at your organization.
+
+Thank you for your time and consideration.
+
+Regards,
+{name}
+{phone}"""
+
     elif template_id == "followup":
-        display_role = role if (role and role.lower() not in ("entry-level opportunity", "n/a")) else "the open position"
-        subject = f"Following up on my application for {display_role} - {YOUR_NAME}"
-        body = f"""Dear Hiring Team,
+        subject = f"Following Up - Job Application - {name}"
+        body = f"""{greeting}
 
-I recently applied for the {display_role} at your organization and wanted to gently follow up on my application.
+I hope you are doing well.
 
-I am very excited about the opportunity to contribute my skills to your team. Please let me know if there is any further information or work samples you need from my end to evaluate my candidacy. My resume is attached for your reference.
+I am writing to follow up on my previous application for entry-level opportunities at your organization, which I had sent a few days ago.
 
-Thank you for your time and continued consideration.
+I remain very interested in contributing to your team and wanted to reiterate my enthusiasm for the opportunity. I am a {degree} graduate with skills in Python, SQL, HTML/CSS, Excel, data analysis, and IT support.
 
-Best regards,
-{YOUR_NAME}
-{PHONE} | {LINKEDIN}"""
+I am an immediate joiner and available for interviews at your convenience.
 
-    # Template 4: Normal / General IT (Indian Standard)
+If my application was received, I would be grateful for any update regarding the next steps. If not, I have re-attached my resume for your reference.
+
+Apologies for any inconvenience, and thank you for your time.
+
+Regards,
+{name}
+{phone}"""
+
     else:
-        subject = f"Application for Entry-Level Opportunity - {YOUR_NAME} (BCA Fresher)"
-        body = f"""Respected Hiring Manager,
+        subject = f"Application for Entry-Level Opportunity - {name}"
+        body = f"""{greeting}
 
-I am {YOUR_NAME}, a recent {DEGREE} graduate from {UNIVERSITY}. I am applying for entry-level opportunities at your organization as advertised.
+I hope you are doing well.
 
-My Skill Set:
-- Web Development (HTML/CSS, JavaScript)
-- Python Scripting & Automation
-- Basic Database Management (SQL)
-- IT Support & Quality Assurance
+I am writing to express my interest in any suitable entry-level opportunity available at your organization. I am a {degree} graduate from {university}, and I am eager to start my professional career.
 
-I am a quick learner and an immediate joiner (no notice period). I have attached my resume and I am available for an interview at your earliest convenience.
+I bring hands-on experience and skills in the following areas:
 
-Thank you for your consideration.
+- Python (scripting and automation)
+- SQL (queries, joins, and data handling)
+- HTML5 and CSS3 (responsive web design)
+- MS Excel (VLOOKUP, Pivot Tables, data analysis, and reporting)
+- Data cleaning, data analysis, and business problem-solving
+- IT support, troubleshooting, and system setup
+- Research and documentation
 
-Warm regards,
-{YOUR_NAME}
-{PHONE} | {LINKEDIN}"""
+I am open to roles such as Research Associate, Data Analyst, Junior Developer, Web Developer, IT Support Executive, MIS Executive, QA Tester, or any other entry-level position where I can contribute and grow.
+
+I am an immediate joiner with no notice period. Please find my resume attached for your review. I would sincerely appreciate the opportunity to discuss how my skills align with your current requirements.
+
+Thank you for your time and consideration.
+
+Regards,
+{name}
+{phone}"""
 
     return subject, body
 
@@ -230,7 +300,7 @@ def send_email(server, to_email, company, role, template_id="normal"):
         if company in ("Unknown Company", "N/A", "", "nan", None):
             company = "your esteemed organization"
 
-        subject, body = get_email_content(template_id, company, role)
+        subject, body = get_email_content(template_id, company, role, to_email)
 
         msg = MIMEMultipart()
         msg['From'] = f"{YOUR_NAME} <{YOUR_EMAIL}>"
