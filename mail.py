@@ -2291,7 +2291,7 @@ def instant_send_email(to_email, company, role, template_id="normal"):
     name = os.environ.get("YOUR_NAME", "Akshat Tripathi")
     phone = os.environ.get("PHONE", "+91-7081484808")
     linkedin = os.environ.get("LINKEDIN", "linkedin.com/in/akshattripathi7081")
-    university = os.environ.get("UNIVERSITY", "Dr. A.P.J. Abdul Kalam Technical University")
+    university = os.environ.get("UNIVERSITY", "Guru Gobind Singh Indraprastha University, New Delhi")
     degree = os.environ.get("DEGREE", "BCA")
     
     if company in ("Unknown Company", "N/A", "", "nan", None):
