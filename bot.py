@@ -117,7 +117,12 @@ def fetch_queue():
         sent = get_sent_emails()
         pending = []
         for q in data:
-            if q.get("status") == "pending" and q.get("email", "").lower() not in sent:
+            is_pending = q.get("status") == "pending"
+            is_followup = q.get("template") == "followup"
+            is_not_sent = q.get("email", "").lower() not in sent
+            
+            # Allow follow-ups to bypass the deduplication check
+            if is_pending and (is_not_sent or is_followup):
                 pending.append(q)
         return pending
     except Exception as e:
@@ -125,9 +130,18 @@ def fetch_queue():
         return []
 
 def update_status(email, status, attempts=None):
-    # Status updates back to Windows are disabled to avoid proxy 403 blocks.
-    # State is maintained locally via LOG_FILE to prevent duplicates.
-    pass
+    if not REPLIT_URL or not MAIL_BOT_SECRET: return
+    try:
+        url = f"{REPLIT_URL}/api/mail_update"
+        data = urllib.parse.urlencode({
+            "email": email,
+            "status": status,
+            "secret": MAIL_BOT_SECRET
+        }).encode()
+        req = urllib.request.Request(url, data=data, method="POST")
+        urllib.request.urlopen(req, timeout=10)
+    except Exception as e:
+        print(f"Failed to sync status to Replit for {email}: {e}")
 
 # ─── Email Engine (v3.0 Templates) ────────────────────────
 
@@ -172,7 +186,23 @@ Regards,
 {YOUR_NAME}
 Phone: {PHONE}"""
 
-    # Template 3: Normal / General IT (Indian Standard)
+    # Template 3: Follow-Up
+    elif template_id == "followup":
+        display_role = role if (role and role.lower() not in ("entry-level opportunity", "n/a")) else "the open position"
+        subject = f"Following up on my application for {display_role} - {YOUR_NAME}"
+        body = f"""Dear Hiring Team,
+
+I recently applied for the {display_role} at your organization and wanted to gently follow up on my application.
+
+I am very excited about the opportunity to contribute my skills to your team. Please let me know if there is any further information or work samples you need from my end to evaluate my candidacy. My resume is attached for your reference.
+
+Thank you for your time and continued consideration.
+
+Best regards,
+{YOUR_NAME}
+{PHONE} | {LINKEDIN}"""
+
+    # Template 4: Normal / General IT (Indian Standard)
     else:
         subject = f"Application for Entry-Level Opportunity - {YOUR_NAME} (BCA Fresher)"
         body = f"""Respected Hiring Manager,
@@ -272,6 +302,9 @@ def main():
                 update_status(email, "sent")
                 sent_count += 1
                 with open(LOG_FILE, "a") as f: f.write(f"{email}\n")
+                
+                # Real-time sent notification via Telegram
+                send_telegram(f"✅ *Mail Sent Today*\nSuccessfully fired off application to: `{email}`\nCompany: {company or 'N/A'}\nRole: {role or 'N/A'}")
             else:
                 new_att = attempts + 1
                 status = "failed" if new_att < MAX_ATTEMPTS else "permanently_failed"

@@ -12,6 +12,7 @@
 import os, csv, json, logging, asyncio, re, hashlib, time, atexit
 import psutil
 import io, shutil, random
+import requests
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -2339,6 +2340,19 @@ def add_to_mail_queue(email,
 
         save_mail_queue(queue)
         logger.info(f"Added to mail queue: {email} using {template} template")
+        
+        # Real-time queue notification to Telegram
+        if TELEGRAM_BOT_TOKEN and CHAT_ID:
+            try:
+                msg = f"📩 *New Email Queued*\nEmail: `{email}`\nCompany: {company or 'N/A'}\nRole: {role or 'N/A'}\nPriority: {priority}"
+                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={
+                    "chat_id": CHAT_ID,
+                    "text": msg,
+                    "parse_mode": "Markdown"
+                }, timeout=5)
+            except Exception as e:
+                logger.error(f"Failed to send queue alert for {email}: {e}")
+                
         return True
 
 
@@ -6349,15 +6363,23 @@ async def send_followup_report(bot):
                 if 60 <= hours_elapsed <= 96 and not item.get(
                         "response_received"):
                     if not item.get("followup_reminder_sent"):
-                        follow_ups.append(item)
+                        # Auto-Queue for Followup!
+                        item["status"] = "pending"
+                        item["template"] = "followup"
+                        item["attempts"] = 0
+                        item["delivery_status"] = "unknown"
+                        item["error"] = None
                         item["followup_reminder_sent"] = True
+                        follow_ups.append(item)
+                        
+    save_mail_queue(queue)
 
     if not follow_ups:
         return
 
     msg = f"🔔 *Follow-Up Reminder!* ({len(follow_ups)} pending)\n"
     msg += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    msg += "These emails were sent ~3 days ago with no response:\n\n"
+    msg += "These emails were sent ~3 days ago with no response. They have been *automatically queued* for tomorrow's run using the Follow-Up template:\n\n"
 
     for item in follow_ups[:10]:
         msg += f"🏢 *{item.get('company', 'Unknown')}*\n"
@@ -6369,8 +6391,7 @@ async def send_followup_report(bot):
 
     msg += "\n*Actions:*\n"
     msg += "1. Check your email for responses\n"
-    msg += "2. Send follow-up email if appropriate\n"
-    msg += "3. `/mailresponse <email> yes` to mark as replied"
+    msg += "2. `/mailresponse <email> yes` to mark as replied (if they do reply)"
 
     try:
         await bot.send_message(chat_id=CHAT_ID,
