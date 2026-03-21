@@ -146,34 +146,7 @@ def update_status(email, status, attempts=None):
 # ─── Email Engine (v4.0 — Synced with mail.py templates) ──
 
 def _make_greeting(email_addr):
-    """
-    Smart greeting: 'Hello [Name] Ma'am/Sir,' or 'Hello Ma'am/Sir,'
-    Matches mail.py style exactly.
-    """
-    import re
-    if not email_addr or "@" not in str(email_addr):
-        return "Hello Ma'am/Sir,"
-    
-    local = email_addr.split("@")[0]
-    generic = {
-        "hr", "hiring", "career", "careers", "info", "jobs",
-        "recruit", "recruitment", "admin", "contact", "support",
-        "noreply", "no-reply", "enquiry", "hello", "team",
-        "mail", "office", "placement", "apply", "resume",
-        "cv", "talent", "people", "jointeam", "work",
-        "internship", "openings", "vacancy",
-    }
-    
-    parts = re.split(r"[._\-+0-9]", local)
-    name_parts = []
-    for p in parts:
-        if p.lower() not in generic and len(p) > 1 and p.isalpha():
-            name_parts.append(p.capitalize())
-    
-    if name_parts:
-        name = " ".join(name_parts[:2])
-        return f"Hello {name} Ma'am/Sir,"
-    
+    """Always use generic greeting — no name detection."""
     return "Hello Ma'am/Sir,"
 
 
