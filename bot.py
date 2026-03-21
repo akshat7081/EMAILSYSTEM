@@ -264,6 +264,105 @@ def get_smtp():
 
 # ─── Main Logic ───────────────────────────────────────────
 
+FOLLOWUP_AFTER_DAYS = 3  # Send follow-up 3 days after original
+
+def send_followups(server):
+    """
+    Automatic Follow-Up System:
+    - Scans mail_queue.json for emails with status='sent'
+    - If sent 3+ days ago AND followup_sent is not True, send follow-up
+    - Only sends 1 follow-up per email, ever
+    """
+    queue_file = os.path.join(BASE_DIR, "mail_queue.json")
+    if not os.path.exists(queue_file):
+        return 0
+
+    try:
+        with open(queue_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except:
+        return 0
+
+    now = datetime.now()
+    followup_count = 0
+    modified = False
+
+    for item in data:
+        # Only follow up on successfully sent emails
+        if item.get("status") != "sent":
+            continue
+        # Skip if already followed up
+        if item.get("followup_sent"):
+            continue
+
+        # Check age: must be at least FOLLOWUP_AFTER_DAYS old
+        sent_date_str = item.get("updated_at") or item.get("added_at") or ""
+        if not sent_date_str:
+            continue
+
+        try:
+            # Try multiple date formats
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+                try:
+                    sent_date = datetime.strptime(sent_date_str.strip(), fmt)
+                    break
+                except ValueError:
+                    continue
+            else:
+                continue
+
+            days_since = (now - sent_date).days
+            if days_since < FOLLOWUP_AFTER_DAYS:
+                continue
+        except:
+            continue
+
+        email = item.get("email", "")
+        company = item.get("company", "your organization")
+        role = item.get("role", "the open position")
+
+        if not email:
+            continue
+
+        # Send follow-up using the followup template
+        try:
+            if send_email(server, email, company, role, "followup"):
+                item["followup_sent"] = True
+                item["followup_date"] = now.strftime("%Y-%m-%d %H:%M")
+                followup_count += 1
+                modified = True
+                print(f"  📩 Follow-up sent to {email}")
+                send_telegram(f"📩 *Follow-Up Sent*\nTo: `{email}`\nCompany: {company}\n(Original sent {days_since} days ago)")
+
+                # Human-like gap between follow-ups
+                gap = random.randint(120, 240)  # 2-4 mins
+                time.sleep(gap)
+        except Exception as e:
+            print(f"  ❌ Follow-up failed for {email}: {e}")
+
+    # Save updated queue with followup flags
+    if modified:
+        try:
+            with open(queue_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            # Also sync back to Replit
+            if REPLIT_URL and MAIL_BOT_SECRET:
+                try:
+                    sync_url = f"{REPLIT_URL}/api/mail_queue_sync"
+                    payload = urllib.parse.urlencode({
+                        "secret": MAIL_BOT_SECRET,
+                        "queue": json.dumps(data)
+                    }).encode()
+                    req = urllib.request.Request(sync_url, data=payload, method="POST")
+                    urllib.request.urlopen(req, timeout=15)
+                except:
+                    pass
+        except:
+            pass
+
+    return followup_count
+
+
 def main():
     if not acquire_lock(): return
     try:
@@ -271,55 +370,58 @@ def main():
         
         queue = fetch_queue()
         to_send = queue
-        if not to_send:
-            print("No pending emails.")
-            send_telegram("ℹ️ No pending emails in queue.")
-            return
-
+        
         server = get_smtp()
-        if not server: return
-
-        # ── INITIAL DELAY: Random between 9 and 11 minutes ──
-        # Makes the 8:05 AM start look completely human and scattered.
-        initial_wait = random.randint(540, 660) # 9 to 11 mins
-        print(f"⏳ Waiting {initial_wait//60} mins before sending first email...")
-        time.sleep(initial_wait)
+        if not server:
+            print("❌ SMTP connection failed.")
+            return
 
         sent_count = 0
         failed_count = 0
-        for item in to_send[:DAILY_LIMIT]:
-            email = item.get("email")
-            company = item.get("company")
-            role = item.get("role")
-            template = item.get("template", "normal")
-            attempts = item.get("attempts", 0)
 
-            # Mark as sending
-            update_status(email, "sending")
-            
-            # Send
-            if send_email(server, email, company, role, template):
-                update_status(email, "sent")
-                sent_count += 1
-                with open(LOG_FILE, "a") as f: f.write(f"{email}\n")
+        if to_send:
+            # ── INITIAL DELAY: Random between 9 and 11 minutes ──
+            initial_wait = random.randint(540, 660)
+            print(f"⏳ Waiting {initial_wait//60} mins before sending first email...")
+            time.sleep(initial_wait)
+
+            for item in to_send[:DAILY_LIMIT]:
+                email = item.get("email")
+                company = item.get("company")
+                role = item.get("role")
+                template = item.get("template", "normal")
+                attempts = item.get("attempts", 0)
+
+                update_status(email, "sending")
                 
-                # Real-time sent notification via Telegram
-                send_telegram(f"✅ *Mail Sent Today*\nSuccessfully fired off application to: `{email}`\nCompany: {company or 'N/A'}\nRole: {role or 'N/A'}")
-            else:
-                new_att = attempts + 1
-                status = "failed" if new_att < MAX_ATTEMPTS else "permanently_failed"
-                update_status(email, status, new_att)
-                failed_count += 1
-            
-            # ── EMAIL GAP: Random between 3 and 6 minutes ──
-            gap = random.randint(180, 360)
-            time.sleep(gap)
+                if send_email(server, email, company, role, template):
+                    update_status(email, "sent")
+                    sent_count += 1
+                    with open(LOG_FILE, "a") as f: f.write(f"{email}\n")
+                    send_telegram(f"✅ *Mail Sent Today*\nSuccessfully fired off application to: `{email}`\nCompany: {company or 'N/A'}\nRole: {role or 'N/A'}")
+                else:
+                    new_att = attempts + 1
+                    status = "failed" if new_att < MAX_ATTEMPTS else "permanently_failed"
+                    update_status(email, status, new_att)
+                    failed_count += 1
+                
+                gap = random.randint(180, 360)
+                time.sleep(gap)
+        else:
+            print("No pending emails.")
+            send_telegram("ℹ️ No pending emails in queue.")
 
+        # ── AUTOMATIC FOLLOW-UP PHASE ──────────────────────
+        print("\n📩 Starting follow-up phase...")
+        followup_count = send_followups(server)
+        
         server.quit()
         
         # Report
-        remaining = len(to_send) - sent_count - failed_count
+        remaining = len(to_send) - sent_count - failed_count if to_send else 0
         report_msg = f"✅ *Sent: {sent_count}* | ❌ *Failed: {failed_count}*\n"
+        if followup_count > 0:
+            report_msg += f"📩 *Follow-ups: {followup_count}*\n"
         if remaining > 0:
             report_msg += f"⏳ Queue: {remaining} remaining."
         else:
@@ -330,13 +432,13 @@ def main():
         try:
             with open(REPORT_FILE, 'a') as f:
                 f.write(f"\n--- {datetime.now().strftime('%Y-%m-%d %H:%M')} ---\n")
-                f.write(f"Sent: {sent_count} | Failed: {failed_count} | Remaining: {remaining}\n")
+                f.write(f"Sent: {sent_count} | Failed: {failed_count} | Follow-ups: {followup_count} | Remaining: {remaining}\n")
         except: pass
 
     finally:
         release_lock()
 
-    print(f"\nDone! Sent: {sent_count} | Failed: {failed_count}")
+    print(f"\nDone! Sent: {sent_count} | Failed: {failed_count} | Follow-ups: {followup_count}")
 
 
 
