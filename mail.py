@@ -4130,11 +4130,17 @@ async def cb_template_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     tmpl_name = tmpl_info.get("name", template_id)
     tmpl_emoji = tmpl_info.get("emoji", "📄")
     
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🚀 Send Now (Instant Dispatch)", callback_data="m_ms")
+    ]])
+    
     await query.edit_message_text(
         f"✅ *Queued {added} emails!* {'(Skipped duplicates)' if added == 0 else ''}\n"
         f"🏢 Company: *{escape_md(company)}*\n"
         f"📁 Template: *{tmpl_emoji} {tmpl_name}*\n\n"
-        f"PythonAnywhere will send these soon."
+        f"Click below to send right now, or ignore to let PA run it.",
+        parse_mode="Markdown",
+        reply_markup=kb
     )
     # Cleanup
     pending_mail_data.pop(data_key, None)
