@@ -1,0 +1,14 @@
+name: Replit Keep-Alive Pinger
+
+on:
+  schedule:
+    - cron: "*/5 * * * *" # Runs every 5 minutes
+  workflow_dispatch: # Allows manual trigger from GitHub UI
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Replit Web Dashboard
+        run: |
+          curl -s -o /dev/null -w "%%{http_code}" https://emailsystem--akshat3478.replit.app/ || echo "Ping failed, but workflow continues"
