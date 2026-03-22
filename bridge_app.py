@@ -1459,17 +1459,33 @@ def cmd_bulk(chat_id, email_text):
             "Example: `/bulk hr@abc.com, jobs@xyz.com`")
         return
 
-    # Validate and classify
+    # Validate and classify — load queue ONCE for speed
     valid = []
     skipped_dup = []
     skipped_bad = []
     free_flags = []
 
+    # Pre-cache: load queue + sent log ONCE (not per-email!)
+    queue = load_queue()
+    queued_emails = {}
+    for item in queue:
+        queued_emails[item.get("email", "").lower().strip()] = item.get("status", "queued")
+    sent_set = set()
+    if os.path.exists(SENT_LOG):
+        try:
+            with open(SENT_LOG, "r") as f:
+                sent_set = {line.strip().lower() for line in f if line.strip()}
+        except:
+            pass
+
     for e in all_emails:
-        # Check duplicate
-        already, status = is_already_processed(e)
-        if already:
-            skipped_dup.append(f"  ⏭️ `{e}` ({status})")
+        # Check duplicate (in-memory lookup — instant)
+        e_lower = e.lower().strip()
+        if e_lower in queued_emails:
+            skipped_dup.append(f"  ⏭️ `{e}` ({queued_emails[e_lower]})")
+            continue
+        if e_lower in sent_set:
+            skipped_dup.append(f"  ⏭️ `{e}` (sent)")
             continue
 
         # Validate quality
