@@ -877,6 +877,54 @@ def handle_callback(callback_query):
         edit_message(chat_id, msg_id,
             "⏭️ *Skipped.* This job won't be shown again.")
 
+    # ══════════════════════════════════════════════════════
+    # MENU BUTTONS: menu_{action}
+    # ══════════════════════════════════════════════════════
+    elif data.startswith("menu_"):
+        action = data[5:]
+        answer_callback(cb_id, "✅")
+
+        if action == "status":
+            cmd_status(chat_id)
+        elif action == "stats":
+            cmd_stats(chat_id)
+        elif action == "queue":
+            cmd_queue(chat_id)
+        elif action == "scan":
+            cmd_scan(chat_id)
+        elif action == "followups":
+            cmd_followups(chat_id)
+        elif action == "clear":
+            cmd_clear(chat_id)
+        elif action == "bulk":
+            send_message(chat_id,
+                "📨 *Bulk Send*\n\n"
+                "Paste emails after /bulk:\n\n"
+                "`/bulk hr@abc.com, jobs@xyz.com info@co.in`\n\n"
+                "Supports comma, space, newline, or semicolon separated.")
+        elif action == "preview":
+            # Show all template previews as buttons
+            btns = []
+            for tid, tinfo in TEMPLATES.items():
+                if tid == "followup":
+                    continue
+                btns.append([{"text": f"{tinfo['emoji']} Preview: {tinfo['name']}",
+                              "callback_data": f"mprev_{tid}"}])
+            btns.append([{"text": "🔙 Back to Menu", "callback_data": "menu_home"}])
+            send_message(chat_id,
+                "👁️ *Choose template to preview:*",
+                reply_markup={"inline_keyboard": btns})
+        elif action == "help":
+            cmd_help(chat_id)
+        elif action == "home":
+            _send_main_menu(chat_id)
+
+    # Preview from menu
+    elif data.startswith("mprev_"):
+        tid = data[6:]
+        answer_callback(cb_id, "✅")
+        cmd_preview(chat_id, [tid])
+
     else:
         answer_callback(cb_id, "Unknown action")
 
@@ -921,22 +969,31 @@ def handle_command(chat_id, text, message_id):
         send_message(chat_id, f"❓ Unknown command: `{cmd}`\n\nType /help for all commands.")
 
 
-def cmd_start(chat_id):
+def _send_main_menu(chat_id):
+    """Send the interactive main menu with buttons."""
+    menu = [
+        [{"text": "📊 Status", "callback_data": "menu_status"},
+         {"text": "📈 Stats", "callback_data": "menu_stats"}],
+        [{"text": "📬 Queue", "callback_data": "menu_queue"},
+         {"text": "📩 Follow-ups", "callback_data": "menu_followups"}],
+        [{"text": "🔎 Scan Jobs", "callback_data": "menu_scan"},
+         {"text": "📨 Bulk Send", "callback_data": "menu_bulk"}],
+        [{"text": "👁️ Preview Templates", "callback_data": "menu_preview"},
+         {"text": "🗑️ Clear Queue", "callback_data": "menu_clear"}],
+        [{"text": "❓ Help & Commands", "callback_data": "menu_help"}],
+    ]
     send_message(chat_id,
-        "👋 *Email Bot v2.0 — Live on PythonAnywhere!*\n"
+        "👋 *Email Bot v2.0*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "📸 Send a *screenshot* of a job post\n"
-        "📝 Or *forward/paste text* with email addresses\n\n"
-        "✨ *Features:*\n"
-        "  📋 3 professional email templates\n"
-        "  🚀 Instant send or ⏰ scheduled send\n"
-        "  📩 Auto follow-up after 4 days\n"
-        "  📊 Queue management & stats\n"
-        "  🔍 Smart email validation\n"
-        "  📬 Reply tracking & inbox monitoring\n"
-        "  🔎 *LinkedIn/Indeed job scanner*\n\n"
-        "Type /help for all commands ✅"
+        "📝 Or *forward/paste text* with emails\n\n"
+        "✨ *Quick Actions:*",
+        reply_markup={"inline_keyboard": menu}
     )
+
+
+def cmd_start(chat_id):
+    _send_main_menu(chat_id)
 
 
 def cmd_help(chat_id):
