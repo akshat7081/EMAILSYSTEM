@@ -916,6 +916,8 @@ def handle_callback(callback_query):
                 reply_markup={"inline_keyboard": btns})
         elif action == "help":
             cmd_help(chat_id)
+        elif action == "scanstatus":
+            cmd_scanstatus(chat_id)
         elif action == "home":
             _send_main_menu(chat_id)
 
@@ -992,37 +994,50 @@ def _send_main_menu(chat_id):
     )
 
 
+# Reusable navigation buttons for all command outputs
+NAV_BUTTONS = {
+    "inline_keyboard": [
+        [{"text": "📊 Status", "callback_data": "menu_status"},
+         {"text": "📬 Queue", "callback_data": "menu_queue"},
+         {"text": "📈 Stats", "callback_data": "menu_stats"}],
+        [{"text": "🔎 Scan Jobs", "callback_data": "menu_scan"},
+         {"text": "📨 Bulk Send", "callback_data": "menu_bulk"}],
+        [{"text": "🏠 Main Menu", "callback_data": "menu_home"}],
+    ]
+}
+
+
 def cmd_start(chat_id):
     _send_main_menu(chat_id)
 
 
 def cmd_help(chat_id):
+    help_buttons = {
+        "inline_keyboard": [
+            [{"text": "📊 Status", "callback_data": "menu_status"},
+             {"text": "📈 Stats", "callback_data": "menu_stats"},
+             {"text": "📬 Queue", "callback_data": "menu_queue"}],
+            [{"text": "📩 Follow-ups", "callback_data": "menu_followups"},
+             {"text": "🔎 Scan Jobs", "callback_data": "menu_scan"}],
+            [{"text": "📨 Bulk Send", "callback_data": "menu_bulk"},
+             {"text": "👁️ Templates", "callback_data": "menu_preview"}],
+            [{"text": "🗑️ Clear Queue", "callback_data": "menu_clear"},
+             {"text": "/scanstatus", "callback_data": "menu_scanstatus"}],
+            [{"text": "🏠 Main Menu", "callback_data": "menu_home"}],
+        ]
+    }
     send_message(chat_id,
-        "📖 *All Commands*\n"
+        "📖 *All Features*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📊 *Status & Info:*\n"
-        "  /status — Quick queue overview\n"
-        "  /stats — Detailed send statistics\n"
-        "  /queue — Full queue with all emails\n"
-        "  /followups — Emails due for follow-up\n\n"
-        "⚙️ *Queue Management:*\n"
-        "  /clear — Clear all pending emails\n"
-        "  /cancel `<email>` — Cancel specific email\n\n"
-        "📧 *Email:*\n"
-        "  /preview `<template>` — Preview template\n"
-        "     Templates: `normal`, `research`, `analytics`\n\n"
-        "📨 *Bulk Send:*\n"
-        "  /bulk `email1 email2 ...` — Paste many emails\n"
-        "  Supports comma, space, or newline separated\n\n"
-        "🔎 *Job Scanner:*\n"
-        "  /scan — Scan LinkedIn/Indeed for jobs with HR emails\n"
-        "  /scan `<query>` — Custom search (e.g. /scan python developer)\n"
-        "  /scanstatus — Last scan results\n\n"
-        "💡 *How to Use:*\n"
-        "  1️⃣ Forward a job post or send a screenshot\n"
-        "  2️⃣ Choose a template (Step 1)\n"
-        "  3️⃣ Send instantly or schedule for 8 AM (Step 2)\n"
-        "  4️⃣ Bot auto-follows up after 4 days! 🔄"
+        "📸 *Send a screenshot* or *forward text* with emails\n"
+        "   ➔ Pick template ➔ Send instantly or schedule\n\n"
+        "🔎 *Job Scanner* scans LinkedIn/Indeed daily\n"
+        "   ➔ Finds jobs with HR emails ➔ you approve ➔ send\n\n"
+        "📨 *Bulk Send:* `/bulk email1 email2 ...`\n\n"
+        "⚙️ *Cancel specific:* `/cancel email@x.com`\n\n"
+        "📩 *Auto follow-up* after 4 days if no reply\n\n"
+        "👇 *Tap any button below:*",
+        reply_markup=help_buttons
     )
 
 
@@ -1068,7 +1083,8 @@ def cmd_status(chat_id):
         f"📩 Follow-ups Due: *{len(followup_due)}*\n"
         f"💬 Replies Received: *{len(replied)}*\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📬 Total in Queue: *{len(queue)}*"
+        f"📬 Total in Queue: *{len(queue)}*",
+        reply_markup=NAV_BUTTONS
     )
 
 
@@ -1101,7 +1117,7 @@ def cmd_queue(chat_id):
         + "\n\n".join(lines) +
         "\n\n_🔄 = follow-up sent | 💬 = reply received_"
     )
-    send_message(chat_id, msg)
+    send_message(chat_id, msg, reply_markup=NAV_BUTTONS)
 
 
 def cmd_stats(chat_id):
@@ -1149,7 +1165,8 @@ def cmd_stats(chat_id):
         f"🔄 Follow-ups Sent: *{followups}*\n"
         f"💬 Replies Received: *{replies}*\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📋 *By Template:*\n" + "\n".join(tmpl_lines)
+        f"📋 *By Template:*\n" + "\n".join(tmpl_lines),
+        reply_markup=NAV_BUTTONS
     )
 
 
