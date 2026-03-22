@@ -913,6 +913,10 @@ def handle_command(chat_id, text, message_id):
         cmd_scan(chat_id, args)
     elif cmd == "/scanstatus":
         cmd_scanstatus(chat_id)
+    elif cmd == "/bulk":
+        # Everything after /bulk is email text
+        bulk_text = text[len("/bulk"):].strip()
+        cmd_bulk(chat_id, bulk_text)
     else:
         send_message(chat_id, f"❓ Unknown command: `{cmd}`\n\nType /help for all commands.")
 
@@ -950,6 +954,9 @@ def cmd_help(chat_id):
         "📧 *Email:*\n"
         "  /preview `<template>` — Preview template\n"
         "     Templates: `normal`, `research`, `analytics`\n\n"
+        "📨 *Bulk Send:*\n"
+        "  /bulk `email1 email2 ...` — Paste many emails\n"
+        "  Supports comma, space, or newline separated\n\n"
         "🔎 *Job Scanner:*\n"
         "  /scan — Scan LinkedIn/Indeed for jobs with HR emails\n"
         "  /scan `<query>` — Custom search (e.g. /scan python developer)\n"
@@ -1316,6 +1323,126 @@ def cmd_scanstatus(chat_id):
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n" +
         "\n\n".join(lines) +
         f"\n\n👁️ Jobs in memory: *{seen_count}* (won't be shown again)"
+    )
+
+
+def cmd_bulk(chat_id, email_text):
+    """
+    Bulk email command: /bulk email1@x.com, email2@y.com ...
+    Supports comma, space, newline, semicolon separated.
+    Flows into the same 2-step template → send/schedule flow.
+    """
+    if not email_text:
+        send_message(chat_id,
+            "📨 *Bulk Send*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Paste emails after /bulk:\n\n"
+            "```\n"
+            "/bulk hr@abc.com, jobs@xyz.com\n"
+            "info@company.in recruit@firm.co\n"
+            "```\n\n"
+            "Supports comma, space, newline, or semicolon separated.\n"
+            "All emails get the same template and send mode.")
+        return
+
+    # Parse: support comma, semicolon, space, newline
+    raw_text = email_text.replace(",", " ").replace(";", " ").replace("\n", " ")
+    all_emails = extract_emails(raw_text)
+
+    if not all_emails:
+        send_message(chat_id,
+            "❌ *No valid emails found!*\n\n"
+            "Make sure you paste valid email addresses after /bulk.\n"
+            "Example: `/bulk hr@abc.com, jobs@xyz.com`")
+        return
+
+    # Validate and classify
+    valid = []
+    skipped_dup = []
+    skipped_bad = []
+    free_flags = []
+
+    for e in all_emails:
+        # Check duplicate
+        already, status = is_already_processed(e)
+        if already:
+            skipped_dup.append(f"  ⏭️ `{e}` ({status})")
+            continue
+
+        # Validate quality
+        is_ok, quality, reason = validate_email_quality(e)
+        if not is_ok:
+            skipped_bad.append(f"  ❌ `{e}` ({reason})")
+            continue
+
+        valid.append(e)
+        if quality == "free":
+            free_flags.append(f"  ⚠️ `{e}` ({reason})")
+
+    if not valid:
+        lines = []
+        if skipped_dup:
+            lines.append("*Already Processed:*\n" + "\n".join(skipped_dup[:10]))
+        if skipped_bad:
+            lines.append("*Invalid:*\n" + "\n".join(skipped_bad[:10]))
+        send_message(chat_id,
+            "📨 *Bulk Send — No New Emails*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n" +
+            "\n\n".join(lines))
+        return
+
+    # Store in pending
+    data_key = hashlib.md5(f"bulk_{valid[0]}_{time.time()}".encode()).hexdigest()[:6]
+    pending = load_pending()
+    pending[data_key] = {
+        "emails": valid,
+        "company": "Bulk Send",
+        "role": "Multiple Positions",
+        "source": "bulk",
+        "ts": time.time(),
+    }
+    save_pending(pending)
+
+    # Show template picker (Step 1)
+    buttons = []
+    for tid, tinfo in TEMPLATES.items():
+        if tid == "followup":
+            continue
+        buttons.append([{
+            "text": f"{tinfo['emoji']} {tinfo['name']}",
+            "callback_data": f"pick_{tid}_{data_key}"
+        }])
+    buttons.append([{
+        "text": "❌ Cancel — Don't Send",
+        "callback_data": f"cancel_{data_key}"
+    }])
+
+    # Build status message
+    status_parts = [
+        f"📨 *Bulk Send — {len(valid)} Emails Ready!*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"✅ New Emails: *{len(valid)}*\n"
+    ]
+    if skipped_dup:
+        status_parts.append(f"⏭️ Duplicates Skipped: *{len(skipped_dup)}*\n")
+    if skipped_bad:
+        status_parts.append(f"❌ Invalid Skipped: *{len(skipped_bad)}*\n")
+
+    # Show first 15 emails
+    email_preview = "\n".join(f"  📧 `{e}`" for e in valid[:15])
+    if len(valid) > 15:
+        email_preview += f"\n  _... +{len(valid)-15} more_"
+
+    status_parts.append(f"\n*Emails:*\n{email_preview}\n")
+
+    if free_flags:
+        status_parts.append("\n⚠️ *Free Domains Detected:*\n" + "\n".join(free_flags[:5]) + "\n")
+
+    status_parts.append("\n👇 *Step 1: Choose Template for ALL emails:*")
+
+    send_message(chat_id,
+        "".join(status_parts),
+        reply_markup={"inline_keyboard": buttons}
     )
 
 
