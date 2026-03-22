@@ -28,8 +28,23 @@ if os.path.exists(env_path):
                 key, val = line.split("=", 1)
                 os.environ[key.strip()] = val.strip()
 
-YOUR_EMAIL = os.environ.get("GMAIL_EMAIL", "")
-YOUR_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
+import random as _rnd
+
+def _build_sender_pool():
+    pool = []
+    e1 = os.environ.get("GMAIL_EMAIL", "")
+    p1 = os.environ.get("GMAIL_APP_PASSWORD", "")
+    if e1 and p1: pool.append((e1, p1))
+    e2 = os.environ.get("GMAIL_EMAIL_2", "")
+    p2 = os.environ.get("GMAIL_APP_PASSWORD_2", "")
+    if e2 and p2: pool.append((e2, p2))
+    e3 = os.environ.get("GMAIL_EMAIL_3", "")
+    p3 = os.environ.get("GMAIL_APP_PASSWORD_3", "")
+    if e3 and p3: pool.append((e3, p3))
+    return pool
+
+SENDER_POOL = _build_sender_pool()
+
 YOUR_NAME = os.environ.get("YOUR_NAME", "Akshat Tripathi")
 PHONE = os.environ.get("PHONE", "+91-7081484808")
 LINKEDIN = os.environ.get("LINKEDIN", "linkedin.com/in/akshattripathi7081")
@@ -273,48 +288,60 @@ Thank you for your time and consideration.
 
     return subject, body
 
-def send_email(server, to_email, company, role, template_id="normal"):
+def send_email(to_email, company, role, template_id="normal"):
+    if not SENDER_POOL:
+        log_error(to_email, "No Gmail credentials configured")
+        return False
+
     try:
         if company in ("Unknown Company", "N/A", "", "nan", None):
             company = "your organization"
-
         subject, body = get_email_content(template_id, company, role, to_email)
 
-        msg = MIMEMultipart()
-        msg['From'] = f"{YOUR_NAME} <{YOUR_EMAIL}>"
-        msg['To'] = to_email
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'plain'))
+        senders = list(SENDER_POOL)
+        _rnd.shuffle(senders)
 
-        if os.path.exists(RESUME_FILE):
-            with open(RESUME_FILE, "rb") as f:
-                part = MIMEBase('application', 'octet-stream')
-                part.set_payload(f.read())
-                encoders.encode_base64(part)
-                part.add_header('Content-Disposition', 'attachment; filename="resume.pdf"')
-                msg.attach(part)
+        last_error = ""
+        for sender_email, sender_pass in senders:
+            try:
+                msg = MIMEMultipart()
+                msg['From'] = f"{YOUR_NAME} <{sender_email}>"
+                msg['To'] = to_email
+                msg['Subject'] = subject
+                msg.attach(MIMEText(body, 'plain'))
 
-        server.sendmail(YOUR_EMAIL, to_email, msg.as_string())
-        return True
+                if os.path.exists(RESUME_FILE):
+                    with open(RESUME_FILE, "rb") as f:
+                        part = MIMEBase('application', 'octet-stream')
+                        part.set_payload(f.read())
+                        encoders.encode_base64(part)
+                        part.add_header('Content-Disposition', 'attachment; filename="resume.pdf"')
+                        msg.attach(part)
+
+                server = smtplib.SMTP('smtp.gmail.com', 587, timeout=30)
+                server.starttls()
+                server.login(sender_email, sender_pass)
+                server.sendmail(sender_email, to_email, msg.as_string())
+                server.quit()
+
+                return True
+            except Exception as e:
+                last_error = str(e)
+                print(f"  ⚠️ Failed via {sender_email}: {e}. Trying next...")
+                continue
+        
+        log_error(to_email, f"All senders failed: {last_error}")
+        return False
+
     except Exception as e:
         log_error(to_email, str(e))
         return False
-
-def get_smtp():
-    try:
-        server = smtplib.SMTP('smtp.gmail.com', 587, timeout=30)
-        server.starttls()
-        server.login(YOUR_EMAIL, YOUR_APP_PASSWORD)
-        return server
-    except Exception as e:
-        print(f"SMTP Login Failed: {e}")
-        return None
 
 # ─── Main Logic ───────────────────────────────────────────
 
 FOLLOWUP_AFTER_DAYS = 4  # Send follow-up 4 days after original (user requested)
 
-def send_followups(server):
+def send_followups():
     """
     Automatic Follow-Up System:
     - Scans mail_queue.json for emails with status='sent'
@@ -378,7 +405,7 @@ def send_followups(server):
 
         # Send follow-up using the followup template
         try:
-            if send_email(server, email, company, role, "followup"):
+            if send_email(email, company, role, "followup"):
                 item["followup_sent"] = True
                 item["followup_date"] = now.strftime("%Y-%m-%d %H:%M")
                 followup_count += 1
@@ -423,9 +450,8 @@ def main():
         queue = fetch_queue()
         to_send = queue
         
-        server = get_smtp()
-        if not server:
-            print("❌ SMTP connection failed.")
+        if not SENDER_POOL:
+            print("❌ SMTP connection failed - No credentials.")
             return
 
         sent_count = 0
@@ -446,7 +472,7 @@ def main():
 
                 update_status(email, "sending")
                 
-                if send_email(server, email, company, role, template):
+                if send_email(email, company, role, template):
                     update_status(email, "sent")
                     sent_count += 1
                     with open(LOG_FILE, "a") as f: f.write(f"{email}\n")
@@ -464,10 +490,9 @@ def main():
 
         # ── AUTOMATIC FOLLOW-UP PHASE ──────────────────────
         print("\n📩 Starting follow-up phase...")
-        followup_count = send_followups(server)
+        followup_count = send_followups()
         
-        server.quit()
-        
+
         # ── Count emails awaiting follow-up ──
         queue_file = os.path.join(BASE_DIR, "mail_queue.json")
         awaiting_followup = 0
