@@ -32,9 +32,34 @@ if os.path.exists(env_path):
 
 BOT_TOKEN   = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID     = os.environ.get("CHAT_ID", "")
-GMAIL_EMAIL = os.environ.get("GMAIL_EMAIL", "")
-GMAIL_PASS  = os.environ.get("GMAIL_APP_PASSWORD", "")
 SECRET      = os.environ.get("MAIL_BOT_SECRET", "akshat123")
+
+# ── Multi-Sender Email Pool (rotate + fallback) ──
+import random as _rnd
+
+def _build_sender_pool():
+    """Build list of (email, password) from env. Supports up to 5 accounts."""
+    pool = []
+    # Primary
+    e1 = os.environ.get("GMAIL_EMAIL", "")
+    p1 = os.environ.get("GMAIL_APP_PASSWORD", "")
+    if e1 and p1:
+        pool.append((e1, p1))
+    # Account 2
+    e2 = os.environ.get("GMAIL_EMAIL_2", "")
+    p2 = os.environ.get("GMAIL_APP_PASSWORD_2", "")
+    if e2 and p2:
+        pool.append((e2, p2))
+    # Account 3
+    e3 = os.environ.get("GMAIL_EMAIL_3", "")
+    p3 = os.environ.get("GMAIL_APP_PASSWORD_3", "")
+    if e3 and p3:
+        pool.append((e3, p3))
+    return pool
+
+SENDER_POOL = _build_sender_pool()
+GMAIL_EMAIL = SENDER_POOL[0][0] if SENDER_POOL else ""
+GMAIL_PASS  = SENDER_POOL[0][1] if SENDER_POOL else ""
 
 YOUR_NAME   = os.environ.get("YOUR_NAME", "Akshat Tripathi")
 PHONE       = os.environ.get("PHONE", "+91-7081484808")
@@ -412,42 +437,54 @@ Thank you for your time and consideration.
 # ─── SMTP Send ──────────────────────────────────────────────
 
 def send_email_now(to_email, template_id="normal"):
-    """Send email immediately via Gmail SMTP."""
-    if not GMAIL_EMAIL or not GMAIL_PASS:
-        return False, "Gmail credentials not set"
+    """Send email via Gmail SMTP with sender rotation + fallback."""
+    if not SENDER_POOL:
+        return False, "No Gmail credentials configured"
 
     subject, body = get_email_content(template_id, to_email)
 
-    try:
-        msg = MIMEMultipart()
-        msg["From"] = f"{YOUR_NAME} <{GMAIL_EMAIL}>"
-        msg["To"] = to_email
-        msg["Subject"] = subject
-        msg.attach(MIMEText(body, "plain"))
+    # Shuffle pool for random rotation
+    senders = list(SENDER_POOL)
+    _rnd.shuffle(senders)
 
-        if os.path.exists(RESUME_FILE):
-            with open(RESUME_FILE, "rb") as f:
-                part = MIMEBase("application", "octet-stream")
-                part.set_payload(f.read())
-                encoders.encode_base64(part)
-                part.add_header("Content-Disposition",
-                                'attachment; filename="resume.pdf"')
-                msg.attach(part)
+    last_error = ""
+    for sender_email, sender_pass in senders:
+        try:
+            msg = MIMEMultipart()
+            msg["From"] = f"{YOUR_NAME} <{sender_email}>"
+            msg["To"] = to_email
+            msg["Subject"] = subject
+            msg.attach(MIMEText(body, "plain"))
 
-        server = smtplib.SMTP("smtp.gmail.com", 587, timeout=30)
-        server.starttls()
-        server.login(GMAIL_EMAIL, GMAIL_PASS)
-        server.sendmail(GMAIL_EMAIL, to_email, msg.as_string())
-        server.quit()
+            if os.path.exists(RESUME_FILE):
+                with open(RESUME_FILE, "rb") as f:
+                    part = MIMEBase("application", "octet-stream")
+                    part.set_payload(f.read())
+                    encoders.encode_base64(part)
+                    part.add_header("Content-Disposition",
+                                    'attachment; filename="resume.pdf"')
+                    msg.attach(part)
 
-        # Log it
-        with open(SENT_LOG, "a") as f:
-            f.write(f"{to_email}\n")
+            server = smtplib.SMTP("smtp.gmail.com", 587, timeout=30)
+            server.starttls()
+            server.login(sender_email, sender_pass)
+            server.sendmail(sender_email, to_email, msg.as_string())
+            server.quit()
 
-        return True, "Success"
-    except Exception as e:
-        logger.error(f"SMTP error: {e}")
-        return False, str(e)
+            # Log it
+            with open(SENT_LOG, "a") as f:
+                f.write(f"{to_email}\n")
+
+            logger.info(f"Sent to {to_email} via {sender_email}")
+            return True, f"Success (via {sender_email.split('@')[0]})"
+
+        except Exception as e:
+            last_error = str(e)
+            logger.warning(f"SMTP failed for {sender_email}: {e}. Trying next...")
+            continue
+
+    logger.error(f"All senders failed for {to_email}: {last_error}")
+    return False, f"All senders failed: {last_error[:50]}"
 
 
 # ─── OCR (pytesseract on PA) ───────────────────────────────
@@ -1309,27 +1346,11 @@ def cmd_preview(chat_id, args):
 
 def cmd_scan(chat_id, args=None):
     """Trigger LinkedIn/Indeed job scan."""
-    import threading
-
-    def _run_scan(custom_queries=None):
-        try:
-            # Import the scanner
-            import importlib.util
-            scanner_path = os.path.join(BASE_DIR, "job_scanner.py")
-            if not os.path.exists(scanner_path):
-                send_message(chat_id, "❌ `job_scanner.py` not found on server.")
-                return
-            spec = importlib.util.spec_from_file_location("job_scanner", scanner_path)
-            scanner = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(scanner)
-
-            if custom_queries:
-                scanner.run_scan(queries=custom_queries)
-            else:
-                scanner.run_scan()
-        except Exception as e:
-            logger.error(f"Scan error: {e}")
-            send_message(chat_id, f"❌ *Scan Failed:*\n`{str(e)[:200]}`")
+    import subprocess
+    scanner_path = os.path.join(BASE_DIR, "job_scanner.py")
+    if not os.path.exists(scanner_path):
+        send_message(chat_id, "❌ `job_scanner.py` not found on server.")
+        return
 
     if args:
         # Custom search query: /scan python developer gurugram
@@ -1338,7 +1359,7 @@ def cmd_scan(chat_id, args=None):
             f"🔎 *Custom Scan Starting...*\n"
             f"Query: `{custom_query}`\n\n"
             f"⏳ This may take 1-2 minutes. Results will appear here.")
-        t = threading.Thread(target=_run_scan, args=([custom_query],), daemon=True)
+        subprocess.Popen([sys.executable, scanner_path, custom_query])
     else:
         send_message(chat_id,
             "🔎 *Full Scan Starting...*\n\n"
@@ -1346,9 +1367,7 @@ def cmd_scan(chat_id, args=None):
             "📍 Locations: Gurugram, Delhi, Noida, New Delhi\n"
             "📅 Filter: Last 15 days with HR emails\n\n"
             "⏳ This may take 3-5 minutes. I'll send each match as it's found!")
-        t = threading.Thread(target=_run_scan, daemon=True)
-
-    t.start()
+        subprocess.Popen([sys.executable, scanner_path])
 
 
 def cmd_scanstatus(chat_id):
