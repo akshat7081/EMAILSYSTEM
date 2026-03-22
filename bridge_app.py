@@ -831,6 +831,52 @@ def handle_callback(callback_query):
         answer_callback(cb_id, "✅ Kept queue!")
         edit_message(chat_id, msg_id, "✅ *Queue kept intact.* Nothing was deleted.")
 
+    # ══════════════════════════════════════════════════════
+    # JOB SCANNER: jobok_{key} — Approve scanned job
+    # ══════════════════════════════════════════════════════
+    elif data.startswith("jobok_"):
+        key = data[6:]
+        info = pending.get(key)
+        if not info:
+            answer_callback(cb_id, "⏳ Expired. Run /scan again.")
+            return
+
+        # Show template picker (Step 1 of existing 2-step flow)
+        buttons = []
+        for tid, tinfo in TEMPLATES.items():
+            if tid == "followup":
+                continue
+            buttons.append([{
+                "text": f"{tinfo['emoji']} {tinfo['name']}",
+                "callback_data": f"pick_{tid}_{key}"
+            }])
+        buttons.append([{
+            "text": "❌ Cancel — Don't Send",
+            "callback_data": f"cancel_{key}"
+        }])
+
+        email_list = "\n".join(f"  📧 `{e}`" for e in info['emails'])
+        answer_callback(cb_id, "✅ Approved!")
+        edit_message(chat_id, msg_id,
+            f"✅ *Job Approved!*\n"
+            f"🏢 {info.get('company', 'Unknown')}\n"
+            f"💼 {info.get('role', 'N/A')}\n\n"
+            f"{email_list}\n\n"
+            f"👇 *Step 1: Choose Email Template:*",
+            reply_markup={"inline_keyboard": buttons}
+        )
+
+    # ══════════════════════════════════════════════════════
+    # JOB SCANNER: jobno_{key} — Skip scanned job
+    # ══════════════════════════════════════════════════════
+    elif data.startswith("jobno_"):
+        key = data[6:]
+        pending.pop(key, None)
+        save_pending(pending)
+        answer_callback(cb_id, "⏭️ Skipped")
+        edit_message(chat_id, msg_id,
+            "⏭️ *Skipped.* This job won't be shown again.")
+
     else:
         answer_callback(cb_id, "Unknown action")
 
@@ -863,6 +909,10 @@ def handle_command(chat_id, text, message_id):
         cmd_cancel(chat_id, args)
     elif cmd == "/preview":
         cmd_preview(chat_id, args)
+    elif cmd == "/scan":
+        cmd_scan(chat_id, args)
+    elif cmd == "/scanstatus":
+        cmd_scanstatus(chat_id)
     else:
         send_message(chat_id, f"❓ Unknown command: `{cmd}`\n\nType /help for all commands.")
 
@@ -879,7 +929,8 @@ def cmd_start(chat_id):
         "  📩 Auto follow-up after 4 days\n"
         "  📊 Queue management & stats\n"
         "  🔍 Smart email validation\n"
-        "  📬 Reply tracking & inbox monitoring\n\n"
+        "  📬 Reply tracking & inbox monitoring\n"
+        "  🔎 *LinkedIn/Indeed job scanner*\n\n"
         "Type /help for all commands ✅"
     )
 
@@ -899,6 +950,10 @@ def cmd_help(chat_id):
         "📧 *Email:*\n"
         "  /preview `<template>` — Preview template\n"
         "     Templates: `normal`, `research`, `analytics`\n\n"
+        "🔎 *Job Scanner:*\n"
+        "  /scan — Scan LinkedIn/Indeed for jobs with HR emails\n"
+        "  /scan `<query>` — Custom search (e.g. /scan python developer)\n"
+        "  /scanstatus — Last scan results\n\n"
         "💡 *How to Use:*\n"
         "  1️⃣ Forward a job post or send a screenshot\n"
         "  2️⃣ Choose a template (Step 1)\n"
@@ -1167,6 +1222,100 @@ def cmd_preview(chat_id, args):
         f"{body}\n"
         f"─────────────────────────\n\n"
         f"📄 Resume: attached automatically"
+    )
+
+
+
+def cmd_scan(chat_id, args=None):
+    """Trigger LinkedIn/Indeed job scan."""
+    import threading
+
+    def _run_scan(custom_queries=None):
+        try:
+            # Import the scanner
+            import importlib.util
+            scanner_path = os.path.join(BASE_DIR, "job_scanner.py")
+            if not os.path.exists(scanner_path):
+                send_message(chat_id, "❌ `job_scanner.py` not found on server.")
+                return
+            spec = importlib.util.spec_from_file_location("job_scanner", scanner_path)
+            scanner = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(scanner)
+
+            if custom_queries:
+                scanner.run_scan(queries=custom_queries)
+            else:
+                scanner.run_scan()
+        except Exception as e:
+            logger.error(f"Scan error: {e}")
+            send_message(chat_id, f"❌ *Scan Failed:*\n`{str(e)[:200]}`")
+
+    if args:
+        # Custom search query: /scan python developer gurugram
+        custom_query = " ".join(args)
+        send_message(chat_id,
+            f"🔎 *Custom Scan Starting...*\n"
+            f"Query: `{custom_query}`\n\n"
+            f"⏳ This may take 1-2 minutes. Results will appear here.")
+        t = threading.Thread(target=_run_scan, args=([custom_query],), daemon=True)
+    else:
+        send_message(chat_id,
+            "🔎 *Full Scan Starting...*\n\n"
+            "📋 Searching: Data Analyst, Research Analyst, QA, MIS, etc.\n"
+            "📍 Locations: Gurugram, Delhi, Noida, New Delhi\n"
+            "📅 Filter: Last 15 days with HR emails\n\n"
+            "⏳ This may take 3-5 minutes. I'll send each match as it's found!")
+        t = threading.Thread(target=_run_scan, daemon=True)
+
+    t.start()
+
+
+def cmd_scanstatus(chat_id):
+    """Show last scan results."""
+    scan_log_file = os.path.join(DATA_DIR, "scan_log.json")
+    if not os.path.exists(scan_log_file):
+        send_message(chat_id, "ℹ️ No scan history yet. Run /scan to start.")
+        return
+
+    try:
+        with open(scan_log_file, "r") as f:
+            logs = json.load(f)
+    except:
+        send_message(chat_id, "ℹ️ No scan history yet. Run /scan to start.")
+        return
+
+    if not logs:
+        send_message(chat_id, "ℹ️ No scan history yet. Run /scan to start.")
+        return
+
+    # Show last 5 scans
+    lines = []
+    for log in logs[-5:]:
+        ts = log.get("timestamp", "?")[:16]
+        found = log.get("total_found", 0)
+        emails = log.get("with_emails", 0)
+        calls = log.get("api_calls", 0)
+        errors = log.get("errors", 0)
+        lines.append(
+            f"  📅 {ts}\n"
+            f"     🔍 Found: {found} | 📧 With Emails: *{emails}* | API: {calls}"
+            + (f" | ❌ Err: {errors}" if errors else "")
+        )
+
+    seen_file = os.path.join(DATA_DIR, "seen_jobs.json")
+    seen_count = 0
+    if os.path.exists(seen_file):
+        try:
+            with open(seen_file, "r") as f:
+                seen_count = len(json.load(f))
+        except:
+            pass
+
+    send_message(chat_id,
+        "📊 *Scan History*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n" +
+        "\n\n".join(lines) +
+        f"\n\n👁️ Jobs in memory: *{seen_count}* (won't be shown again)"
     )
 
 
