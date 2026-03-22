@@ -1359,7 +1359,12 @@ def cmd_scan(chat_id, args=None):
             f"🔎 *Custom Scan Starting...*\n"
             f"Query: `{custom_query}`\n\n"
             f"⏳ This may take 1-2 minutes. Results will appear here.")
-        subprocess.Popen([sys.executable, scanner_path, custom_query])
+        subprocess.Popen(
+            [sys.executable, scanner_path, custom_query],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True
+        )
     else:
         send_message(chat_id,
             "🔎 *Full Scan Starting...*\n\n"
@@ -1367,7 +1372,12 @@ def cmd_scan(chat_id, args=None):
             "📍 Locations: Gurugram, Delhi, Noida, New Delhi\n"
             "📅 Filter: Last 15 days with HR emails\n\n"
             "⏳ This may take 3-5 minutes. I'll send each match as it's found!")
-        subprocess.Popen([sys.executable, scanner_path])
+        subprocess.Popen(
+            [sys.executable, scanner_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True
+        )
 
 
 def cmd_scanstatus(chat_id):
