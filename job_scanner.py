@@ -15,7 +15,12 @@ from datetime import datetime, timedelta
 USERNAME = os.environ.get("PA_USERNAME", "akshat7081")
 BASE_DIR = f"/home/{USERNAME}"
 
+# Determine env path: if on PythonAnywhere use BASE_DIR, else use current dir for local Windows testing 
 env_path = os.path.join(BASE_DIR, ".env")
+if not os.path.exists(env_path):
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__)) # Update BASE_DIR to local for data paths
+
 if os.path.exists(env_path):
     with open(env_path, "r", encoding="utf-8") as f:
         for line in f:

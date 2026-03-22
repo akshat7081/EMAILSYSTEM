@@ -1102,10 +1102,7 @@ async def cmd_quicksend(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"📤 Will be sent by PythonAnywhere",
             parse_mode="Markdown")
     else:
-        st = get_email_status(email_addr)
-        if st == "sent": await safe_reply(update, f"✅ `{email_addr}` was already sent successfully.")
-        elif st == "queued": await safe_reply(update, f"🕒 `{email_addr}` is still in the queue.")
-        else: await safe_reply(update, f"⚙️ `{email_addr}` was previously processed.")
+        await safe_reply(update, _format_email_status_line(email_addr), parse_mode="Markdown")
 
 IMPORTANT_KEYWORDS = (
     "artificial intelligence", "machine learning", "deep learning", "nlp",
@@ -2170,30 +2167,71 @@ def reset_stuck_sending(hours=2):
 
 
 def get_email_status(email):
-    """Return explicit status string for UI feedback"""
+    """Return rich status dict for UI feedback.
+    Returns: {"status": "sent"|"queued"|"scheduled"|"processed"|"new",
+              "template": "research"|"normal"|...|None,
+              "template_name": "Research Associate"|...|None,
+              "template_emoji": "🔬"|...|None,
+              "added_at": "2026-03-19 13:48"|None}
+    """
     email = email.strip().lower()
     with data_lock:
         queue = safe_load_json(MAIL_QUEUE_FILE, [])
         for q in queue:
             if q.get("email", "").lower() == email:
-                return "sent" if str(q.get("status")).lower() == "sent" else "queued"
+                tmpl_key = q.get("template", "normal")
+                templates = load_templates()
+                tmpl_info = templates.get(tmpl_key, {})
+                st = "sent" if str(q.get("status")).lower() == "sent" else \
+                     "scheduled" if q.get("source") == "scheduled" and str(q.get("status")).lower() == "pending" else \
+                     "queued"
+                return {
+                    "status": st,
+                    "template": tmpl_key,
+                    "template_name": tmpl_info.get("name", tmpl_key.title()),
+                    "template_emoji": tmpl_info.get("emoji", "📧"),
+                    "added_at": q.get("added_at", ""),
+                }
         if os.path.exists(SENT_LOG_FILE):
             try:
                 df = pd.read_csv(SENT_LOG_FILE)
                 if not df.empty and "email" in df.columns and email in df["email"].str.lower().values:
-                    return "sent"
+                    return {"status": "sent", "template": None, "template_name": None, "template_emoji": None, "added_at": None}
             except: pass
         if os.path.exists(EMAILS_FILE):
             try:
                 df = pd.read_csv(EMAILS_FILE)
                 if not df.empty and "email" in df.columns and email in df["email"].str.lower().values:
-                    return "processed"
+                    return {"status": "processed", "template": None, "template_name": None, "template_emoji": None, "added_at": None}
             except: pass
-    return "new"
+    return {"status": "new", "template": None, "template_name": None, "template_emoji": None, "added_at": None}
 
 def is_email_already_processed(email):
     """Check ALL sources for duplicates (Legacy Wrapper)"""
-    return get_email_status(email) != "new"
+    return get_email_status(email)["status"] != "new"
+
+
+def _format_email_status_line(email_addr):
+    """Helper: format a single email's status for Telegram display"""
+    st = get_email_status(email_addr)
+    status = st["status"]
+    tmpl_tag = ""
+    if st.get("template_emoji") and st.get("template_name"):
+        tmpl_tag = f" via {st['template_emoji']} {st['template_name']}"
+    date_tag = ""
+    if st.get("added_at"):
+        date_tag = f" ({st['added_at'][:10]})"
+
+    if status == "sent":
+        return f"  ✅ `{email_addr}` — Already sent{tmpl_tag}{date_tag}"
+    elif status == "queued":
+        return f"  🕒 `{email_addr}` — Queued{tmpl_tag}{date_tag}"
+    elif status == "scheduled":
+        return f"  ⏰ `{email_addr}` — Scheduled{tmpl_tag}{date_tag}"
+    elif status == "processed":
+        return f"  ⚙️ `{email_addr}` — Previously processed"
+    else:
+        return f"  🟢 `{email_addr}` — New, ready to send"
 
 
 def calculate_mail_priority(email, company, source, role=""):
@@ -3040,10 +3078,7 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if duplicates:
                 email_lines.append("\n*Already Processed:*")
                 for e in duplicates:
-                    st = get_email_status(e)
-                    if st == "sent": email_lines.append(f"  ✅ `{e}` (Sent successfully)")
-                    elif st == "queued": email_lines.append(f"  🕒 `{e}` (Still in queue)")
-                    else: email_lines.append(f"  ⚙️ `{e}` (Previously processed)")
+                    email_lines.append(_format_email_status_line(e))
 
             response = (
                 f"🎯 *Job Found & Emails Queued!*\n"
@@ -3088,10 +3123,7 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif found_emails:
             status_lines = []
             for e in found_emails:
-                st = get_email_status(e)
-                if st == "sent": status_lines.append(f"  ✅ `{e}` (Already sent successfully)")
-                elif st == "queued": status_lines.append(f"  🕒 `{e}` (Still in queue)")
-                else: status_lines.append(f"  ⚙️ `{e}` (Previously processed/scraped)")
+                status_lines.append(_format_email_status_line(e))
             
             email_list = "\n".join(status_lines)
             await safe_edit(
@@ -3169,12 +3201,9 @@ async def handle_photo_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             status_lines = []
             for e in found_emails:
                 if e in new_emails_set:
-                    status_lines.append(f"  🟢 `{e}` (New, ready to send)")
+                    status_lines.append(f"  🟢 `{e}` — New, ready to send")
                 else:
-                    st = get_email_status(e)
-                    if st == "sent": status_lines.append(f"  ✅ `{e}` (Sent successfully)")
-                    elif st == "queued": status_lines.append(f"  🕒 `{e}` (Still in queue)")
-                    else: status_lines.append(f"  ⚙️ `{e}` (Previously processed)")
+                    status_lines.append(_format_email_status_line(e))
                     
             email_list = "\n".join(status_lines)
             import time, hashlib
@@ -3204,10 +3233,7 @@ async def handle_photo_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif found_emails:
             status_lines = []
             for e in found_emails:
-                st = get_email_status(e)
-                if st == "sent": status_lines.append(f"  ✅ `{e}` (Already sent successfully)")
-                elif st == "queued": status_lines.append(f"  🕒 `{e}` (Still in queue)")
-                else: status_lines.append(f"  ⚙️ `{e}` (Previously processed/scraped)")
+                status_lines.append(_format_email_status_line(e))
             
             await safe_edit(
                 status_msg,
@@ -3291,10 +3317,7 @@ async def cmd_bulkdone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if duplicates:
             email_lines.append("\n*Already Processed:*")
             for e in duplicates:
-                st = get_email_status(e)
-                if st == "sent": email_lines.append(f"  ✅ `{e}` (Sent successfully)")
-                elif st == "queued": email_lines.append(f"  🕒 `{e}` (Still in queue)")
-                else: email_lines.append(f"  ⚙️ `{e}` (Previously processed)")
+                email_lines.append(_format_email_status_line(e))
 
         response = (
             f"📸 *Bulk Scan Complete!*\n"
@@ -3319,10 +3342,7 @@ async def cmd_bulkdone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif all_emails:
         status_lines = []
         for e in all_emails:
-            st = get_email_status(e)
-            if st == "sent": status_lines.append(f"  ✅ `{e}` (Already sent successfully)")
-            elif st == "queued": status_lines.append(f"  🕒 `{e}` (Still in queue)")
-            else: status_lines.append(f"  ⚙️ `{e}` (Previously processed)")
+            status_lines.append(_format_email_status_line(e))
             
         list_str = "\n".join(status_lines[:15])
         if len(status_lines) > 15: list_str += f"\n  ... +{len(status_lines)-15} more"
@@ -3866,25 +3886,51 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if job_cache["search_running"]:
-        await update.effective_message.reply_text(
-            "⚠️ *Search Already Running!*\n{sep}\n"
-            "🔄 Please wait for current search to finish.\n📊 Check progress: /stats"
-            .format(sep=SEP_THIN),
-            parse_mode="Markdown")
+    """Trigger job search via standalone scanner script"""
+    import subprocess
+    import sys
+    
+    scanner_path = os.path.join(DATA_DIR, "..", "job_scanner.py")
+    if getattr(sys, 'frozen', False):
+        scanner_path = os.path.join(os.path.dirname(sys.executable), "job_scanner.py")
+    else:
+        scanner_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "job_scanner.py")
+        
+    if not os.path.exists(scanner_path):
+        await update.effective_message.reply_text("❌ `job_scanner.py` not found. Cannot start scan.")
         return
-    await update.effective_message.reply_text(
-        "🔍 *Search Initiated!*\n{sep}\n\n"
-        "🚀 Scanning across *{locs}* locations\n"
-        "🔎 Using *{terms}* search terms\n"
-        "⏳ Estimated time: ~20-30 min\n\n"
-        "📊 Results will appear here as they're found!".format(
-            sep=SEP_BOLD, locs=len(LOCATIONS), terms=len(SEARCH_TERMS)),
-        parse_mode="Markdown")
-    # Bug #14 & #15: Non-blocking
-    task = asyncio.create_task(run_search(ctx.bot))
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+
+    args = ctx.args or []
+    if args:
+        # Custom search query: /search python developer gurugram
+        custom_query = " ".join(args)
+        await update.effective_message.reply_text(
+            f"🔎 *Custom Scan Starting...*\n"
+            f"Query: `{custom_query}`\n\n"
+            f"⏳ This may take 1-2 minutes. Results will appear here.",
+            parse_mode="Markdown")
+        
+        subprocess.Popen(
+            [sys.executable, scanner_path, custom_query],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True
+        )
+    else:
+        await update.effective_message.reply_text(
+            "🔎 *Full Scan Starting...*\n\n"
+            "📋 Searching: Python Developer, Data Analyst, QA, etc.\n"
+            "📍 Locations: Gurugram, Delhi, Noida, India\n"
+            "📅 Filter: Last 60 days with HR emails\n\n"
+            "⏳ This may take 3-5 minutes. I'll send each match as it's found!",
+            parse_mode="Markdown")
+        
+        subprocess.Popen(
+            [sys.executable, scanner_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True
+        )
 
 
 async def cmd_emails(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -4170,10 +4216,7 @@ async def cb_fwd_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             status_lines = []
             for e in list(set(emails)):
-                st = get_email_status(e)
-                if st == "sent": status_lines.append(f"  ✅ `{e}` (Sent successfully)")
-                elif st == "queued": status_lines.append(f"  🕒 `{e}` (Still in queue)")
-                else: status_lines.append(f"  ⚙️ `{e}` (Previously processed)")
+                status_lines.append(_format_email_status_line(e))
             
             await q.edit_message_text(
                 "ℹ️ *Duplicate Text Detected:*\n\n" + "\n".join(status_lines),
@@ -4230,13 +4273,32 @@ async def cb_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         # ── Menu callbacks ─────────────────────────────
         if d == "m_search":
-            if job_cache["search_running"]:
-                await m.reply_text("⚠️ Already running!")
+            import subprocess
+            import sys
+            scanner_path = os.path.join(DATA_DIR, "..", "job_scanner.py")
+            if getattr(sys, 'frozen', False):
+                scanner_path = os.path.join(os.path.dirname(sys.executable), "job_scanner.py")
+            else:
+                scanner_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "job_scanner.py")
+                
+            if not os.path.exists(scanner_path):
+                await m.reply_text("❌ `job_scanner.py` not found. Cannot start scan.")
                 return
-            await m.reply_text("🔍 Starting search...")
-            task = asyncio.create_task(run_search(ctx.bot))
-            _background_tasks.add(task)
-            task.add_done_callback(_background_tasks.discard)
+
+            await m.reply_text(
+                "🔎 *Full Scan Starting...*\n\n"
+                "📋 Searching: Python Developer, Data Analyst, QA, etc.\n"
+                "📍 Locations: Gurugram, Delhi, Noida, India\n"
+                "📅 Filter: Last 60 days with HR emails\n\n"
+                "⏳ This may take 3-5 minutes. I'll send each match as it's found!",
+                parse_mode="Markdown")
+            
+            subprocess.Popen(
+                [sys.executable, scanner_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True
+            )
 
         elif d == "m_imp":
             jobs = load_csv(IMPORTANT_FILE)
@@ -4418,22 +4480,58 @@ async def cb_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                               parse_mode="Markdown",
                               reply_markup=kb)
 
-        elif d == "m_mq":
+        elif d == "m_mq" or d.startswith("m_mq_"):
             queue = load_mail_queue()
             pending = [qi for qi in queue if qi.get("status") == "pending"]
+            sent_c = sum(1 for qi in queue if qi.get("status") == "sent")
+            
             if not pending:
                 txt = "📋 *Queue Empty!*\nForward a post to add!"
             else:
-                txt = "📋 *Queue ({} pending)*\n{}\n\n{}".format(
-                    len(pending), SEP_DASH, "\n\n".join([
-                        "📧 `{}` → {}".format(qi.get("email", ""),
-                                             safe_str(qi.get("company")))
-                        for qi in pending[-10:]
-                    ]))
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📤 Send All", callback_data="m_ms")],
-                [InlineKeyboardButton("🔙 Mail", callback_data="m_mail")],
-            ])
+                # Pagination support: m_mq_2, m_mq_3, etc.
+                page = 1
+                if d.startswith("m_mq_"):
+                    try: page = int(d.split("_")[-1])
+                    except: page = 1
+                
+                PER_PAGE = 15
+                total_pages = max(1, (len(pending) + PER_PAGE - 1) // PER_PAGE)
+                page = min(page, total_pages)
+                start = (page - 1) * PER_PAGE
+                page_items = pending[start:start + PER_PAGE]
+                templates = load_templates()
+                
+                lines = []
+                for i, qi in enumerate(page_items, start=start + 1):
+                    tmpl_key = qi.get("template", "normal")
+                    tmpl_emoji = templates.get(tmpl_key, {}).get("emoji", "📧")
+                    lines.append(f"{i}. {tmpl_emoji} `{qi.get('email', '')}`\n   └ {safe_str(qi.get('company', ''))[:20]}")
+                
+                txt = (f"📋 *Queue: {len(pending)} pending │ {sent_c} sent*\n"
+                       f"{SEP_DASH}\n\n" + "\n".join(lines))
+                
+                if total_pages > 1:
+                    txt += f"\n\n📄 Page {page}/{total_pages}"
+
+            # Build keyboard with pagination
+            nav_buttons = []
+            if d.startswith("m_mq_") or len(pending) > 15:
+                page = 1
+                if d.startswith("m_mq_"):
+                    try: page = int(d.split("_")[-1])
+                    except: page = 1
+                total_pages = max(1, (len(pending) + 14) // 15)
+                if page > 1:
+                    nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"m_mq_{page-1}"))
+                if page < total_pages:
+                    nav_buttons.append(InlineKeyboardButton("➡️ Next", callback_data=f"m_mq_{page+1}"))
+            
+            kb_rows = []
+            if nav_buttons:
+                kb_rows.append(nav_buttons)
+            kb_rows.append([InlineKeyboardButton("📤 Send All", callback_data="m_ms")])
+            kb_rows.append([InlineKeyboardButton("🔙 Mail", callback_data="m_mail")])
+            kb = InlineKeyboardMarkup(kb_rows)
             await m.edit_text(txt, parse_mode="Markdown", reply_markup=kb)
 
         elif d == "m_ms":
@@ -4451,7 +4549,7 @@ async def cb_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 email_addr = item.get("email", "")
                 # Dedup guard: skip if already sent
                 st = get_email_status(email_addr)
-                if st == "sent":
+                if st["status"] == "sent":
                     skipped += 1
                     item["status"] = "sent"
                     item["delivery_status"] = "already_sent"
@@ -4883,8 +4981,7 @@ async def cb_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                             if is_valid_email(first_email):
                                 # Dedup guard
                                 if is_email_already_processed(first_email):
-                                    st = get_email_status(first_email)
-                                    await m.reply_text(f"⚠️ *Already Processed!*\n\n`{first_email}` was already {st}.\nNo duplicate sent.", parse_mode="Markdown")
+                                    await m.reply_text(f"⚠️ *Already Processed!*\n\n{_format_email_status_line(first_email)}\nNo duplicate sent.", parse_mode="Markdown")
                                     return
                                 await m.reply_text(f"🚀 *Instant Send Triggered* for `{first_email}`...\nSending now...", parse_mode="Markdown")
                                 success, msg_text = instant_send_email(first_email, co, ti, "normal")
@@ -4923,8 +5020,7 @@ async def cb_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 if is_valid_email(first_email):
                     # Dedup guard
                     if is_email_already_processed(first_email):
-                        st = get_email_status(first_email)
-                        await q.edit_message_text(f"⚠️ *Already Processed!*\n\n`{first_email}` was already {st}.\nNo duplicate sent.", parse_mode="Markdown")
+                        await q.edit_message_text(f"⚠️ *Already Processed!*\n\n{_format_email_status_line(first_email)}\nNo duplicate sent.", parse_mode="Markdown")
                         ctx.user_data.get("pending_mail_data", {}).pop(data_key, None)
                         return
                     await q.edit_message_text(f"🚀 *Instant Send Triggered* for `{first_email}`...\nSending now...", parse_mode="Markdown")
@@ -5075,10 +5171,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 status_lines = []
                 # Unique emails only
                 for e in list(set(emails)):
-                    st = get_email_status(e)
-                    if st == "sent": status_lines.append(f"  ✅ `{e}` (Sent successfully)")
-                    elif st == "queued": status_lines.append(f"  🕒 `{e}` (Still in queue)")
-                    else: status_lines.append(f"  ⚙️ `{e}` (Previously processed)")
+                    status_lines.append(_format_email_status_line(e))
                 
                 await msg.reply_text(
                     "ℹ️ *Duplicate Text Detected:*\n\n" + "\n".join(status_lines),
@@ -5114,12 +5207,9 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             status_lines = []
             for e in list(set(emails)):
                 if e in valid_emails:
-                    status_lines.append(f"  🟢 `{e}` (New, ready to send)")
+                    status_lines.append(f"  🟢 `{e}` — New, ready to send")
                 else:
-                    st = get_email_status(e)
-                    if st == "sent": status_lines.append(f"  ✅ `{e}` (Sent successfully)")
-                    elif st == "queued": status_lines.append(f"  🕒 `{e}` (Still in queue)")
-                    else: status_lines.append(f"  ⚙️ `{e}` (Previously processed)")
+                    status_lines.append(_format_email_status_line(e))
 
             await msg.reply_text(
                 f"🎯 *Job Post Detected!*\n"
@@ -5735,20 +5825,92 @@ async def cmd_mail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_mailqueue(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """View detailed mail queue"""
+    """View detailed mail queue with pagination and filters.
+    Usage: /mailqueue [status_filter] [page_num]
+    Examples:
+        /mailqueue          → All pending (page 1)
+        /mailqueue all      → All items (page 1)
+        /mailqueue sent     → Sent only
+        /mailqueue failed   → Failed only
+        /mailqueue 2        → Page 2 of pending
+        /mailqueue all 3    → Page 3 of all items
+    """
+    ITEMS_PER_PAGE = 15
     queue = safe_load_json(MAIL_QUEUE_FILE, [])
-    pending = [q for q in queue if q.get("status") == "pending"]
-
-    if not pending:
+    
+    if not queue:
         await update.effective_message.reply_text("📭 Mail queue is empty.")
         return
 
-    msg = "📋 *Pending Mail Queue (Top 10)*\n\n"
-    for i, item in enumerate(pending[:10]):
-        msg += f"{i+1}. `{item.get('email')}`\n   └ {item.get('company')}\n"
+    # Parse args: filter and page
+    args = ctx.args or []
+    status_filter = "pending"  # default
+    page = 1
+    
+    for arg in args:
+        if arg.lower() in ("all", "sent", "pending", "failed", "scheduled", "sending"):
+            status_filter = arg.lower()
+        elif arg.isdigit():
+            page = max(1, int(arg))
 
-    if len(pending) > 10:
-        msg += f"\n...and {len(pending)-10} more."
+    # Filter items
+    if status_filter == "all":
+        filtered = queue
+        filter_label = "All Emails"
+    else:
+        filtered = [q for q in queue if q.get("status", "").lower() == status_filter]
+        filter_label = f"{status_filter.title()} Emails"
+
+    if not filtered:
+        await update.effective_message.reply_text(
+            f"📭 No *{status_filter}* emails in queue.\n\n"
+            f"💡 Try: `/mailqueue all` to see everything",
+            parse_mode="Markdown")
+        return
+
+    # Counts summary
+    total = len(queue)
+    pending_c = sum(1 for q in queue if q.get("status") == "pending")
+    sent_c = sum(1 for q in queue if q.get("status") == "sent")
+    failed_c = sum(1 for q in queue if q.get("status") in ("failed", "permanently_failed"))
+    sending_c = sum(1 for q in queue if q.get("status") == "sending")
+
+    # Pagination
+    total_pages = max(1, (len(filtered) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
+    page = min(page, total_pages)
+    start_idx = (page - 1) * ITEMS_PER_PAGE
+    end_idx = start_idx + ITEMS_PER_PAGE
+    page_items = filtered[start_idx:end_idx]
+
+    templates = load_templates()
+    
+    msg = (f"📋 *Mail Queue — {filter_label}*\n"
+           f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+           f"📊 Total: *{total}* │ ⏳ *{pending_c}* │ ✅ *{sent_c}* │ ❌ *{failed_c}*\n\n")
+
+    for i, item in enumerate(page_items, start=start_idx + 1):
+        email = item.get("email", "?")
+        company = safe_str(item.get("company", ""))[:20]
+        status = item.get("status", "?")
+        tmpl_key = item.get("template", "normal")
+        tmpl_info = templates.get(tmpl_key, {})
+        tmpl_emoji = tmpl_info.get("emoji", "📧")
+        added = item.get("added_at", "")[:10]
+        
+        status_icon = {"sent": "✅", "pending": "⏳", "failed": "❌", "sending": "📤", "scheduled": "⏰"}.get(status, "❓")
+        
+        msg += f"{i}. {status_icon} `{email}`\n   └ {tmpl_emoji} {company}"
+        if added:
+            msg += f" • {added}"
+        msg += "\n"
+
+    # Pagination footer
+    if total_pages > 1:
+        msg += f"\n📄 Page *{page}/{total_pages}* ({len(filtered)} items)"
+        if page < total_pages:
+            msg += f"\n➡️ `/mailqueue {status_filter} {page + 1}` for next page"
+    
+    msg += (f"\n\n💡 *Filters:* `/mailqueue all` │ `sent` │ `pending` │ `failed`")
 
     await update.effective_message.reply_text(msg, parse_mode="Markdown")
 
