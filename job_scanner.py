@@ -1,13 +1,10 @@
 # ============================================================
-# JOB SCANNER v1.0 — LinkedIn/Indeed Email Extractor
-# Uses JSearch API (RapidAPI free: 500 req/month)
-# Finds jobs with HR emails → sends to Telegram for approval
+# JOB SCANNER v2.0 — LinkedIn/Indeed Email Extractor
+# Uses python-jobspy (FREE, UNLIMITED, NO API KEY NEEDED)
+# Scrapes LinkedIn + Indeed → extracts HR emails → sends to TG
 # ============================================================
-# SETUP: Get free API key from https://rapidapi.com/letscrape-6bRBa3QguO5/api/jsearch
-#   1. Sign up at rapidapi.com (free)
-#   2. Subscribe to JSearch (free tier)
-#   3. Copy your X-RapidAPI-Key
-#   4. Add to .env: RAPIDAPI_KEY=your_key_here
+# ZERO SETUP REQUIRED — jobspy is already installed!
+# Just run: /scan on Telegram
 # ============================================================
 
 import os, json, re, hashlib, time, logging
@@ -27,21 +24,22 @@ if os.path.exists(env_path):
                 key, val = line.split("=", 1)
                 os.environ[key.strip()] = val.strip()
 
-BOT_TOKEN    = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-CHAT_ID      = os.environ.get("CHAT_ID", "")
-RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+CHAT_ID   = os.environ.get("CHAT_ID", "")
 
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
-SEEN_JOBS_FILE   = os.path.join(DATA_DIR, "seen_jobs.json")
-SCAN_LOG_FILE    = os.path.join(DATA_DIR, "scan_log.json")
-QUEUE_FILE       = os.path.join(BASE_DIR, "mail_queue.json")
-PENDING_FILE     = os.path.join(DATA_DIR, "pending_actions.json")
+SEEN_JOBS_FILE = os.path.join(DATA_DIR, "seen_jobs.json")
+SCAN_LOG_FILE  = os.path.join(DATA_DIR, "scan_log.json")
+QUEUE_FILE     = os.path.join(BASE_DIR, "mail_queue.json")
+PENDING_FILE   = os.path.join(DATA_DIR, "pending_actions.json")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("scanner")
 
-# ─── Search Configuration (based on your resume skills) ─────
+# ═══════════════════════════════════════════════════════════
+# SEARCH CONFIG — Based on your resume skills
+# ═══════════════════════════════════════════════════════════
 
 SEARCH_QUERIES = [
     "data analyst",
@@ -50,47 +48,60 @@ SEARCH_QUERIES = [
     "business analyst",
     "MIS analyst",
     "MIS executive",
-    "software QA",
-    "QA tester",
-    "junior developer",
+    "software QA tester",
+    "QA analyst",
     "junior python developer",
-    "web developer fresher",
+    "junior web developer",
     "IT support executive",
-    "data entry analyst",
+    "data entry operator",
+    "junior software developer",
+    "SQL developer fresher",
+    "Excel analyst",
 ]
 
-# Gurugram, Delhi NCR locations
 LOCATIONS = [
-    "Gurugram, Haryana, India",
+    "Gurugram, India",
     "Delhi, India",
-    "Noida, Uttar Pradesh, India",
-    "New Delhi, India",
+    "Noida, India",
+    "Ghaziabad, India",
 ]
 
-MAX_DAYS_OLD = 15  # Only jobs posted within last 15 days
-MAX_RESULTS_PER_QUERY = 10
+MAX_DAYS_OLD = 15
+RESULTS_PER_QUERY = 20  # jobspy is free — go big!
 
-# ─── Email Extraction ──────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# EMAIL EXTRACTION — Smart HR email finder
+# ═══════════════════════════════════════════════════════════
 
 EMAIL_RE = re.compile(
     r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}",
     re.IGNORECASE
 )
 
-# Domains to skip (not real HR contacts)
+# Skip these — not real HR contacts
 SKIP_DOMAINS = {
     "example.com", "test.com", "email.com", "domain.com", "company.com",
     "sentry.io", "github.com", "gitlab.com", "w3.org", "schema.org",
     "googleusercontent.com", "gstatic.com", "googleapis.com",
     "apple.com", "microsoft.com", "mozilla.org", "w3schools.com",
     "stackoverflow.com", "wikipedia.org", "wikimedia.org",
+    "linkedin.com", "indeed.com", "naukri.com", "monster.com",
+    "glassdoor.com", "instagram.com", "facebook.com", "twitter.com",
+    "youtube.com", "google.com",
 }
 
 # Spammy TLDs
-SPAMMY_TLDS = {".xyz", ".top", ".buzz", ".click", ".tk", ".ga", ".gq", ".ml", ".cf"}
+SPAMMY_TLDS = {".xyz", ".top", ".buzz", ".click", ".tk", ".ga", ".gq", ".ml", ".cf", ".work", ".icu"}
+
+# HR-like email patterns (boost priority)
+HR_PATTERNS = [
+    r"^hr@", r"^hiring@", r"^recruit", r"^careers@", r"^jobs@",
+    r"^talent@", r"^apply@", r"^placement@", r"^resume@",
+    r"^cv@", r"^staffing@", r"^humanresource",
+]
 
 def extract_emails_from_text(text):
-    """Extract valid HR-like emails from job description text."""
+    """Extract valid HR-like emails from job description."""
     if not text:
         return []
     raw = EMAIL_RE.findall(text)
@@ -102,6 +113,7 @@ def extract_emails_from_text(text):
             continue
         seen.add(e)
         domain = e.split("@")[1] if "@" in e else ""
+
         # Skip blacklisted domains
         if domain in SKIP_DOMAINS:
             continue
@@ -114,15 +126,47 @@ def extract_emails_from_text(text):
         # Skip noreply
         if "noreply" in e or "no-reply" in e or "donotreply" in e:
             continue
-        # Skip very short local parts (likely auto-generated)
+        # Skip very short local parts
         local = e.split("@")[0]
         if len(local) < 3:
             continue
+
         valid.append(e)
+
+    # Sort: HR-like emails first
+    def hr_score(email):
+        for pat in HR_PATTERNS:
+            if re.match(pat, email.split("@")[0]):
+                return 0  # Top priority
+        return 1
+    valid.sort(key=hr_score)
+
     return valid
 
 
-# ─── Telegram API ──────────────────────────────────────────
+def classify_email_quality(email):
+    """Classify email as hr/corporate/free."""
+    domain = email.split("@")[1] if "@" in email else ""
+    local = email.split("@")[0]
+
+    # HR-specific
+    for pat in HR_PATTERNS:
+        if re.match(pat, local):
+            return "🟢 HR"
+
+    # Free email
+    free_domains = {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com",
+                    "rediffmail.com", "ymail.com", "live.com", "icloud.com"}
+    if domain in free_domains:
+        return "🟡 Personal"
+
+    # Corporate
+    return "🔵 Corporate"
+
+
+# ═══════════════════════════════════════════════════════════
+# TELEGRAM API
+# ═══════════════════════════════════════════════════════════
 
 def tg_api(method, data=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
@@ -146,7 +190,9 @@ def send_tg(text, reply_markup=None):
     return tg_api("sendMessage", data)
 
 
-# ─── Deduplication ─────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# DEDUPLICATION
+# ═══════════════════════════════════════════════════════════
 
 def load_seen():
     if os.path.exists(SEEN_JOBS_FILE):
@@ -158,13 +204,11 @@ def load_seen():
     return []
 
 def save_seen(seen):
-    # Keep last 2000
     with open(SEEN_JOBS_FILE, "w") as f:
-        json.dump(seen[-2000:], f, indent=2)
+        json.dump(seen[-3000:], f, indent=2)
 
 def is_seen(job_id):
-    seen = load_seen()
-    return job_id in seen
+    return job_id in load_seen()
 
 def mark_seen(job_id):
     seen = load_seen()
@@ -173,21 +217,19 @@ def mark_seen(job_id):
         save_seen(seen)
 
 def is_already_in_queue(email):
-    """Check if email is already in mail queue."""
     if not os.path.exists(QUEUE_FILE):
         return False
     try:
         with open(QUEUE_FILE, "r") as f:
             queue = json.load(f)
-        for item in queue:
-            if item.get("email", "").lower() == email.lower():
-                return True
+        return any(item.get("email", "").lower() == email.lower() for item in queue)
     except:
-        pass
-    return False
+        return False
 
 
-# ─── Pending Actions (shared with bridge_app.py) ──────────
+# ═══════════════════════════════════════════════════════════
+# PENDING ACTIONS (shared with bridge_app.py)
+# ═══════════════════════════════════════════════════════════
 
 def load_pending():
     if os.path.exists(PENDING_FILE):
@@ -203,132 +245,119 @@ def save_pending(data):
         json.dump(data, f, indent=2)
 
 
-# ─── JSearch API (RapidAPI) ────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# JOBSPY SCRAPER — FREE, UNLIMITED, NO API KEY
+# ═══════════════════════════════════════════════════════════
 
-JSEARCH_HOST = "jsearch.p.rapidapi.com"
-
-def jsearch_query(query, location, page=1):
+def scrape_jobs_batch(query, location, results_wanted=20):
     """
-    Search for jobs using JSearch API.
-    Free tier: 500 requests/month.
+    Scrape LinkedIn + Indeed using python-jobspy.
+    FREE — no API key needed. No request limits.
     Returns list of job dicts.
     """
-    if not RAPIDAPI_KEY:
-        logger.error("RAPIDAPI_KEY not set! Get one free at rapidapi.com")
-        return []
-
-    params = urllib.parse.urlencode({
-        "query": f"{query} in {location}",
-        "page": str(page),
-        "num_pages": "1",
-        "date_posted": "month",  # Last 30 days (we'll filter further)
-        "remote_jobs_only": "false",
-        "employment_types": "FULLTIME,INTERN,PARTTIME",
-    })
-
-    url = f"https://{JSEARCH_HOST}/search?{params}"
-    headers = {
-        "X-RapidAPI-Key": RAPIDAPI_KEY,
-        "X-RapidAPI-Host": JSEARCH_HOST,
-    }
-
-    req = urllib.request.Request(url, headers=headers)
     try:
-        resp = urllib.request.urlopen(req, timeout=30)
-        data = json.loads(resp.read().decode())
-        return data.get("data", [])
-    except urllib.error.HTTPError as e:
-        if e.code == 429:
-            logger.warning("Rate limited. Waiting 60s...")
-            time.sleep(60)
-        elif e.code == 403:
-            logger.error("API key invalid or quota exceeded!")
-        else:
-            logger.error(f"JSearch HTTP error {e.code}: {e.reason}")
+        from jobspy import scrape_jobs
+        import pandas as pd
+
+        logger.info(f"Scraping: '{query}' in '{location}'...")
+
+        df = scrape_jobs(
+            site_name=["linkedin", "indeed"],
+            search_term=query,
+            location=location,
+            results_wanted=results_wanted,
+            hours_old=MAX_DAYS_OLD * 24,  # Convert days to hours
+            country_indeed="India",
+            verbose=0,
+        )
+
+        if df is None or df.empty:
+            return []
+
+        jobs = []
+        for _, row in df.iterrows():
+            jobs.append({
+                "job_id": str(row.get("id", "")),
+                "title": str(row.get("title", "Unknown")),
+                "company": str(row.get("company", "Unknown")),
+                "location": str(row.get("location", location)),
+                "description": str(row.get("description", "")),
+                "job_url": str(row.get("job_url", "")),
+                "date_posted": str(row.get("date_posted", "")),
+                "site": str(row.get("site", "unknown")),
+                "job_type": str(row.get("job_type", "")),
+                "salary_source": str(row.get("min_amount", "")),
+                "min_salary": row.get("min_amount"),
+                "max_salary": row.get("max_amount"),
+                "currency": str(row.get("currency", "INR")),
+                "is_remote": bool(row.get("is_remote", False)),
+                "company_url": str(row.get("company_url", "")),
+            })
+
+        return jobs
+
+    except ImportError:
+        logger.error("python-jobspy not installed! pip install python-jobspy")
         return []
     except Exception as e:
-        logger.error(f"JSearch error: {e}")
+        logger.error(f"Scrape error for '{query}' in '{location}': {e}")
         return []
 
 
-def jsearch_estimated_salaries(title, location):
-    """Get estimated salary for a role (bonus info)."""
-    if not RAPIDAPI_KEY:
-        return None
-    params = urllib.parse.urlencode({
-        "job_title": title,
-        "location": location,
-        "radius": "100",
-    })
-    url = f"https://{JSEARCH_HOST}/estimated-salary?{params}"
-    headers = {
-        "X-RapidAPI-Key": RAPIDAPI_KEY,
-        "X-RapidAPI-Host": JSEARCH_HOST,
-    }
-    req = urllib.request.Request(url, headers=headers)
-    try:
-        resp = urllib.request.urlopen(req, timeout=15)
-        data = json.loads(resp.read().decode())
-        salaries = data.get("data", [])
-        if salaries:
-            return salaries[0]
-    except:
-        pass
-    return None
-
-
-# ─── Job Processing ───────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# JOB PROCESSOR — Filter + Extract + Send
+# ═══════════════════════════════════════════════════════════
 
 def process_job(job):
     """
-    Process a single job result from JSearch.
-    Returns dict with extracted info or None if not useful.
+    Process a single job from jobspy.
+    Returns enriched dict if job has emails, else None.
     """
     job_id = job.get("job_id", "")
-    title = job.get("job_title", "Unknown Role")
-    company = job.get("employer_name", "Unknown")
-    location = job.get("job_city", "") or job.get("job_state", "") or "India"
-    description = job.get("job_description", "")
-    apply_link = job.get("job_apply_link", "")
-    posted_ts = job.get("job_posted_at_timestamp")
-    source = job.get("job_publisher", "Unknown")
-    job_type = job.get("job_employment_type", "FULLTIME")
-    is_remote = job.get("job_is_remote", False)
-    min_salary = job.get("job_min_salary")
-    max_salary = job.get("job_max_salary")
-    currency = job.get("job_salary_currency", "INR")
+    title = job.get("title", "Unknown")
+    company = job.get("company", "Unknown")
+    location = job.get("location", "India")
+    description = job.get("description", "")
+    job_url = job.get("job_url", "")
+    site = job.get("site", "unknown")
+    date_posted = job.get("date_posted", "")
+
+    # Generate unique ID if missing
+    if not job_id or job_id == "nan":
+        job_id = hashlib.md5(f"{title}{company}{location}".encode()).hexdigest()[:12]
 
     # Skip if already seen
-    if not job_id:
-        job_id = hashlib.md5(f"{title}{company}{location}".encode()).hexdigest()[:12]
     if is_seen(job_id):
         return None
 
-    # Check age: must be under MAX_DAYS_OLD
-    if posted_ts:
+    # Calculate days old
+    days_old = "?"
+    if date_posted and date_posted != "nan" and date_posted != "":
         try:
-            posted_date = datetime.fromtimestamp(posted_ts)
-            days_old = (datetime.now() - posted_date).days
-            if days_old > MAX_DAYS_OLD:
+            for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%d-%m-%Y", "%m/%d/%Y"):
+                try:
+                    posted_date = datetime.strptime(str(date_posted).strip()[:10], fmt)
+                    days_old = (datetime.now() - posted_date).days
+                    break
+                except ValueError:
+                    continue
+            if isinstance(days_old, int) and days_old > MAX_DAYS_OLD:
                 mark_seen(job_id)
                 return None
         except:
-            days_old = -1
-    else:
-        days_old = -1
+            pass
 
     # Extract emails from description
     emails = extract_emails_from_text(description)
 
-    # Also check in apply link (sometimes email-based apply)
-    if apply_link and "mailto:" in apply_link.lower():
-        mailto_emails = extract_emails_from_text(apply_link)
-        emails.extend(mailto_emails)
+    # Also check URL for mailto links
+    if job_url and "mailto:" in str(job_url).lower():
+        emails.extend(extract_emails_from_text(str(job_url)))
 
-    # Deduplicate
+    # Deduplicate emails
     emails = list(dict.fromkeys(emails))
 
-    # Filter out emails already in queue
+    # Filter already-in-queue
     new_emails = [e for e in emails if not is_already_in_queue(e)]
 
     if not new_emails:
@@ -337,10 +366,16 @@ def process_job(job):
 
     # Build salary string
     salary_str = ""
-    if min_salary and max_salary:
-        salary_str = f"₹{int(min_salary):,} - ₹{int(max_salary):,} {currency}"
-    elif min_salary:
-        salary_str = f"₹{int(min_salary):,}+ {currency}"
+    min_sal = job.get("min_salary")
+    max_sal = job.get("max_salary")
+    if min_sal and str(min_sal) != "nan" and str(min_sal) != "None":
+        try:
+            if max_sal and str(max_sal) != "nan" and str(max_sal) != "None":
+                salary_str = f"₹{int(float(min_sal)):,} - ₹{int(float(max_sal)):,}"
+            else:
+                salary_str = f"₹{int(float(min_sal)):,}+"
+        except:
+            pass
 
     return {
         "job_id": job_id,
@@ -348,21 +383,20 @@ def process_job(job):
         "company": company,
         "location": location,
         "emails": new_emails,
-        "days_old": days_old if days_old >= 0 else "?",
-        "source": source,
-        "job_type": job_type,
-        "is_remote": is_remote,
+        "days_old": days_old,
+        "site": site.capitalize() if site else "Unknown",
         "salary": salary_str,
-        "apply_link": apply_link,
-        "description_preview": (description or "")[:300],
+        "job_url": job_url if job_url and str(job_url) != "nan" else "",
+        "description_preview": (description or "")[:400],
+        "is_remote": job.get("is_remote", False),
     }
 
 
 def send_job_to_telegram(job_info):
-    """Send a job card to Telegram with approve/reject buttons."""
+    """Send a rich job card to Telegram with approve/reject buttons."""
     data_key = hashlib.md5(f"{job_info['job_id']}{time.time()}".encode()).hexdigest()[:6]
 
-    # Store in pending for bridge_app.py to handle callbacks
+    # Store in pending for bridge_app.py
     pending = load_pending()
     pending[data_key] = {
         "emails": job_info["emails"],
@@ -376,25 +410,35 @@ def send_job_to_telegram(job_info):
     # Mark as seen
     mark_seen(job_info["job_id"])
 
-    # Build message
-    email_list = "\n".join(f"  📧 `{e}`" for e in job_info["emails"])
+    # Build email list with quality badges
+    email_lines = []
+    for e in job_info["emails"]:
+        badge = classify_email_quality(e)
+        email_lines.append(f"  {badge} `{e}`")
+    email_list = "\n".join(email_lines)
+
     remote_tag = " 🏠 Remote" if job_info.get("is_remote") else ""
     salary_line = f"💰 Salary: *{job_info['salary']}*\n" if job_info.get("salary") else ""
+    url_line = f"🔗 [View Job]({job_info['job_url']})\n" if job_info.get("job_url") else ""
+
+    # Clean description preview
+    preview = job_info.get("description_preview", "")[:250]
+    preview = preview.replace("*", "").replace("_", "").replace("`", "").replace("[", "").replace("]", "")
 
     msg = (
         f"🔍 *New Job Found!*\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"💼 *{job_info['title']}*\n"
-        f"🏢 Company: *{job_info['company']}*\n"
-        f"📍 Location: {job_info['location']}{remote_tag}\n"
+        f"🏢 {job_info['company']}\n"
+        f"📍 {job_info['location']}{remote_tag}\n"
         f"📅 Posted: {job_info['days_old']} days ago\n"
-        f"🌐 Source: {job_info['source']}\n"
+        f"🌐 Source: {job_info['site']}\n"
         f"{salary_line}"
+        f"{url_line}"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📧 *HR Emails Found ({len(job_info['emails'])}):\n*"
+        f"📧 *HR Emails ({len(job_info['emails'])}):\n*"
         f"{email_list}\n\n"
-        f"📝 *Preview:*\n"
-        f"_{job_info['description_preview'][:200]}..._\n\n"
+        f"📝 _{preview}..._\n\n"
         f"👇 *Approve to send application?*"
     )
 
@@ -406,51 +450,50 @@ def send_job_to_telegram(job_info):
     return send_tg(msg, reply_markup={"inline_keyboard": buttons})
 
 
-# ─── Main Scanner ─────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# MAIN SCANNER
+# ═══════════════════════════════════════════════════════════
 
 def run_scan(queries=None, locations=None, notify_start=True):
     """
-    Main scan function. Can be called from:
-    - PA scheduled task (daily at 7 AM)
-    - /scan command via bridge_app.py
+    Main scan function.
+    Uses python-jobspy — FREE, UNLIMITED, NO API KEY.
+    Can be triggered by:
+      - /scan command via Telegram
+      - PA scheduled task (daily)
     """
-    if not RAPIDAPI_KEY:
-        send_tg(
-            "❌ *JSearch API Key Missing!*\n\n"
-            "To enable job scanning:\n"
-            "1. Go to [rapidapi.com](https://rapidapi.com/letscrape-6bRBa3QguO5/api/jsearch)\n"
-            "2. Sign up (free)\n"
-            "3. Subscribe to JSearch (free tier: 500 req/month)\n"
-            "4. Copy your API key\n"
-            "5. Add to .env: `RAPIDAPI_KEY=your_key_here`\n"
-            "6. Reload the web app"
-        )
-        return {"found": 0, "with_emails": 0, "error": "No API key"}
-
     if queries is None:
         queries = SEARCH_QUERIES
     if locations is None:
         locations = LOCATIONS
 
     if notify_start:
+        query_list = ", ".join(queries[:5])
+        if len(queries) > 5:
+            query_list += f"... +{len(queries)-5} more"
+
         send_tg(
             f"🔍 *Job Scan Started...*\n"
-            f"📋 Queries: {len(queries)}\n"
-            f"📍 Locations: {len(locations)}\n"
-            f"📅 Filter: Last {MAX_DAYS_OLD} days with HR emails"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📋 Queries: {len(queries)} ({query_list})\n"
+            f"📍 Locations: {', '.join(locations)}\n"
+            f"📅 Filter: Last {MAX_DAYS_OLD} days\n"
+            f"📧 Only jobs with HR email addresses\n\n"
+            f"🆓 Using jobspy (free, unlimited)\n"
+            f"⏳ This may take 3-5 minutes..."
         )
 
     total_found = 0
     jobs_with_emails = 0
     errors = 0
-    api_calls = 0
+    scans_done = 0
 
     for loc in locations:
         for query in queries:
+            scans_done += 1
             try:
-                api_calls += 1
-                logger.info(f"Scanning: '{query}' in {loc}")
-                jobs = jsearch_query(query, loc)
+                logger.info(f"[{scans_done}] Scanning: '{query}' in '{loc}'")
+                jobs = scrape_jobs_batch(query, loc, RESULTS_PER_QUERY)
                 total_found += len(jobs)
 
                 for job in jobs:
@@ -458,34 +501,34 @@ def run_scan(queries=None, locations=None, notify_start=True):
                     if result:
                         jobs_with_emails += 1
                         send_job_to_telegram(result)
-                        # Small delay between TG messages
-                        time.sleep(1)
+                        time.sleep(1.5)  # Telegram rate limit
 
-                # Rate limit: pause between API calls
-                time.sleep(2)
+                # Be polite to LinkedIn/Indeed — don't hammer
+                time.sleep(3)
 
             except Exception as e:
                 errors += 1
-                logger.error(f"Scan error for '{query}' in {loc}: {e}")
+                logger.error(f"Scan error for '{query}' in '{loc}': {e}")
+                time.sleep(2)
 
-    # Summary
+    # ── Summary ──
     summary = (
         f"📊 *Scan Complete!*\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🔍 API Calls: {api_calls}\n"
+        f"🔍 Searches Done: {scans_done}\n"
         f"📋 Total Jobs Found: {total_found}\n"
         f"📧 Jobs with HR Emails: *{jobs_with_emails}*\n"
     )
     if errors:
         summary += f"❌ Errors: {errors}\n"
     if jobs_with_emails == 0:
-        summary += "\nℹ️ No new jobs with email addresses found this time.\n"
+        summary += "\nℹ️ No new jobs with HR email addresses found.\nTry again later or use /scan with a custom query."
     else:
-        summary += f"\n✅ {jobs_with_emails} job(s) sent above — tap *Approve* to send application!"
+        summary += f"\n✅ {jobs_with_emails} job(s) sent above!\nTap *Approve* → Pick template → Send instantly or schedule."
 
     send_tg(summary)
 
-    # Log
+    # ── Log ──
     try:
         log = []
         if os.path.exists(SCAN_LOG_FILE):
@@ -493,7 +536,7 @@ def run_scan(queries=None, locations=None, notify_start=True):
                 log = json.load(f)
         log.append({
             "timestamp": datetime.now().isoformat(),
-            "api_calls": api_calls,
+            "searches": scans_done,
             "total_found": total_found,
             "with_emails": jobs_with_emails,
             "errors": errors,
@@ -507,7 +550,7 @@ def run_scan(queries=None, locations=None, notify_start=True):
         "found": total_found,
         "with_emails": jobs_with_emails,
         "errors": errors,
-        "api_calls": api_calls,
+        "searches": scans_done,
     }
 
 
@@ -515,13 +558,12 @@ def run_scan(queries=None, locations=None, notify_start=True):
 
 if __name__ == "__main__":
     import sys
+    print(f"🚀 Job Scanner v2.0 started: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print(f"🆓 Using python-jobspy (free, unlimited, no API key)")
 
-    print(f"🚀 Job Scanner started: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-
-    # Allow custom queries from command line
     if len(sys.argv) > 1:
-        custom_queries = sys.argv[1:]
-        print(f"Custom queries: {custom_queries}")
+        custom_queries = [" ".join(sys.argv[1:])]
+        print(f"Custom query: {custom_queries}")
         result = run_scan(queries=custom_queries)
     else:
         result = run_scan()
