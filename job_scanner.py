@@ -42,32 +42,75 @@ logger = logging.getLogger("scanner")
 # ═══════════════════════════════════════════════════════════
 
 SEARCH_QUERIES = [
+    # ── Data & Analytics ──
     "data analyst",
-    "research analyst",
-    "research associate",
+    "data analyst fresher",
+    "junior data analyst",
     "business analyst",
     "MIS analyst",
     "MIS executive",
+    "data entry analyst",
+    "Excel data analyst",
+    "SQL data analyst",
+
+    # ── Research ──
+    "research analyst",
+    "research associate",
+    "research assistant",
+    "market research analyst",
+
+    # ── QA & Testing ──
     "software QA tester",
     "QA analyst",
+    "QA engineer fresher",
+    "manual testing fresher",
+    "software tester",
+
+    # ── Development (BCA-relevant) ──
     "junior python developer",
     "junior web developer",
-    "IT support executive",
-    "data entry operator",
+    "python developer fresher",
+    "HTML CSS developer",
+    "frontend developer fresher",
     "junior software developer",
     "SQL developer fresher",
-    "Excel analyst",
+    "BCA fresher",
+
+    # ── IT Support & Operations ──
+    "IT support executive",
+    "IT helpdesk",
+    "technical support executive",
+    "system administrator fresher",
+    "IT executive",
+    "IT coordinator",
+    "desktop support engineer",
+
+    # ── General / Back Office ──
+    "data entry operator",
+    "back office executive BCA",
+    "computer operator",
+    "office executive BCA",
+
+    # ── Remote-specific ──
+    "remote data analyst India",
+    "remote QA tester India",
+    "remote python developer India",
+    "work from home data analyst",
+    "work from home IT support",
 ]
 
 LOCATIONS = [
     "Gurugram, India",
     "Delhi, India",
     "Noida, India",
+    "New Delhi, India",
     "Ghaziabad, India",
+    "Faridabad, India",
+    "India",  # Catches all-India + remote postings
 ]
 
-MAX_DAYS_OLD = 15
-RESULTS_PER_QUERY = 20  # jobspy is free — go big!
+MAX_DAYS_OLD = 60  # 2 months window
+RESULTS_PER_QUERY = 25  # jobspy is free — go massive! (40 queries × 7 locs × 25 = 7000 potential)
 
 # ═══════════════════════════════════════════════════════════
 # EMAIL EXTRACTION — Smart HR email finder
@@ -205,7 +248,7 @@ def load_seen():
 
 def save_seen(seen):
     with open(SEEN_JOBS_FILE, "w") as f:
-        json.dump(seen[-3000:], f, indent=2)
+        json.dump(seen[-10000:], f, indent=2)
 
 def is_seen(job_id):
     return job_id in load_seen()
