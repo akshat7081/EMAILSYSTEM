@@ -1,6 +1,7 @@
 # ============================================
-# PYTHONANYWHERE SCRIPT v3.0 — FINAL OVERHAUL
-# Reads from Replit API, sends emails with dynamic templates & resume sync
+# PYTHONANYWHERE SCRIPT v4.0 — SCHEDULED SENDER
+# Reads mail_queue.json, sends emails with
+# dynamic templates, resume, and auto follow-ups
 # ============================================
 
 import smtplib, json, time, random
@@ -26,6 +27,7 @@ if os.path.exists(env_path):
             if line and not line.startswith("#") and "=" in line:
                 key, val = line.split("=", 1)
                 os.environ[key.strip()] = val.strip()
+
 YOUR_EMAIL = os.environ.get("GMAIL_EMAIL", "")
 YOUR_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
 YOUR_NAME = os.environ.get("YOUR_NAME", "Akshat Tripathi")
@@ -100,7 +102,7 @@ def send_telegram(msg):
 # ─── Data Sync ────────────────────────────────────────────
 
 def get_sent_emails():
-    """Load previously sent emails to prevent PA double-sending if Windows overwrites queue."""
+    """Load previously sent emails to prevent PA double-sending."""
     if not os.path.exists(LOG_FILE): return set()
     with open(LOG_FILE, "r") as f:
         return set(line.split()[0].strip().lower() for line in f if line.strip())
@@ -143,135 +145,138 @@ def update_status(email, status, attempts=None):
     except Exception as e:
         print(f"Failed to sync status to Replit for {email}: {e}")
 
-# ─── Email Engine (v4.0 — Synced with mail.py templates) ──
+# ─── Email Engine v5.0 — Clean Templates ─────────────────
 
 def _make_greeting(email_addr):
     """Always use generic greeting — no name detection."""
     return "Hello Ma'am/Sir,"
 
 
+def _signature_block():
+    """Professional signature with contact links."""
+    return (
+        f"Regards,\n"
+        f"{YOUR_NAME}\n"
+        f"{PHONE}\n"
+        f"LinkedIn: {LINKEDIN}\n"
+        f"GitHub: {GITHUB}"
+    )
+
+
 def get_email_content(template_id, company, role, to_email=""):
-    """Generate subject and body — synced with mail.py templates"""
+    """Generate subject and body — clean templates, no company/employee names."""
     greeting = _make_greeting(to_email)
     name = YOUR_NAME
-    phone = PHONE
     degree = DEGREE
     university = UNIVERSITY
+    sig = _signature_block()
 
     if template_id == "research":
-        subject = f"Application for Research Associate Position - {name}"
+        subject = f"Application for Research Associate Position — {name}"
         body = f"""{greeting}
 
-I hope you are doing well.
+I hope this email finds you well.
 
-I am writing to express my interest in the Research Associate / Research Assistant position at your organization. I am a {degree} graduate from {university}, and I am keen to contribute to research-driven work.
+I am writing to express my interest in the Research Associate / Research Assistant position at your organization. I am a {degree} graduate from {university}, eager to contribute to impactful research-driven work.
 
-I bring skills and experience in the following areas:
+My key competencies include:
 
-- Data collection, cleaning, and analysis (Python, Excel, SQL)
-- Literature review and academic research methodology
-- Statistical analysis and data interpretation
-- Technical documentation and report writing
-- Survey design, data gathering, and synthesis
-- MS Office proficiency (Word, Excel, PowerPoint)
-- Database management (MySQL, data modelling)
-- Internet research and information compilation
+  • Data collection, cleaning, and analysis using Python, Excel, and SQL
+  • Literature review and academic research methodology
+  • Statistical analysis and data interpretation
+  • Technical documentation and research report writing
+  • Survey design, data gathering, and synthesis
+  • MS Office proficiency (Word, Excel, PowerPoint)
+  • Database management (MySQL, data modelling)
+  • Internet research and information compilation
 
-I have strong analytical thinking, attention to detail, and the ability to work both independently and in a team. I am a quick learner and passionate about contributing to meaningful research.
+I am detail-oriented, analytically strong, and capable of working both independently and collaboratively. I am passionate about contributing meaningfully to research initiatives.
 
-I am an immediate joiner with no notice period. Please find my resume attached for your review. I would sincerely appreciate the opportunity to discuss how my skills can support the research goals at your organization.
+I am available to join immediately with no notice period. My resume is attached for your reference. I would greatly appreciate the opportunity to discuss how my skills can support your research objectives.
 
 Thank you for your time and consideration.
 
-Regards,
-{name}
-{phone}"""
+{sig}"""
 
     elif template_id == "analytics":
-        subject = f"Application for Data Analyst Position - {name}"
+        subject = f"Application for Data Analyst Position — {name}"
         body = f"""{greeting}
 
-I hope you are doing well.
+I hope this email finds you well.
 
-I am writing to apply for data analytics opportunities at your organization. I am a {degree} graduate from {university}, with a strong interest in turning data into actionable insights.
+I am writing to apply for data analytics opportunities at your organization. I am a {degree} graduate from {university}, with a strong foundation in transforming raw data into actionable business insights.
 
-I bring hands-on skills in the following areas:
+My technical skills include:
 
-- Python for data analysis (Pandas, NumPy, Matplotlib)
-- SQL (complex queries, joins, aggregations, window functions)
-- Advanced MS Excel (Pivot Tables, VLOOKUP, Power Query, dashboards)
-- Data cleaning, preprocessing, and transformation
-- Data visualization and reporting
-- Statistical analysis and trend identification
-- MIS reporting and business intelligence basics
-- Database management (MySQL, data modelling)
+  • Python for data analysis (Pandas, NumPy, Matplotlib, Seaborn)
+  • SQL (complex queries, joins, aggregations, window functions, CTEs)
+  • Advanced MS Excel (Pivot Tables, VLOOKUP, Power Query, dashboards)
+  • Data cleaning, preprocessing, and transformation pipelines
+  • Data visualization and business reporting
+  • Statistical analysis and trend identification
+  • MIS reporting and business intelligence fundamentals
+  • Database management (MySQL, data modelling)
 
-I have worked on projects involving sales data analysis, customer segmentation, automated reporting dashboards, and data cleaning pipelines.
+I have worked on projects involving sales data analysis, customer segmentation, automated reporting dashboards, and ETL pipelines.
 
-I am open to roles such as Data Analyst, Business Analyst, MIS Analyst, Junior BI Developer, Analytics Executive, or any data-focused entry-level position.
+I am open to roles such as Data Analyst, Business Analyst, MIS Analyst, Junior BI Developer, Analytics Executive, or any data-focused position.
 
-I am an immediate joiner with no notice period. Please find my resume attached for your review. I would be grateful for the opportunity to contribute data-driven insights at your organization.
+I am available to join immediately with no notice period. My resume is attached for your review. I would welcome the opportunity to bring data-driven insights to your team.
 
 Thank you for your time and consideration.
 
-Regards,
-{name}
-{phone}"""
+{sig}"""
 
     elif template_id == "followup":
-        subject = f"Following Up - Job Application - {name}"
+        subject = f"Following Up — Job Application — {name}"
         body = f"""{greeting}
 
 I hope you are doing well.
 
-I am writing to follow up on my previous application for entry-level opportunities at your organization, which I had sent a few days ago.
+I am writing to politely follow up on my previous application that I had sent a few days ago. I remain genuinely interested in contributing to your team and wanted to reaffirm my enthusiasm for the opportunity.
 
-I remain very interested in contributing to your team and wanted to reiterate my enthusiasm for the opportunity. I am a {degree} graduate with skills in Python, SQL, HTML/CSS, Excel, data analysis, and IT support.
+I am a {degree} graduate with hands-on skills in Python, SQL, HTML/CSS, Excel, data analysis, and IT support. I am a quick learner who is eager to contribute and grow.
 
-I am an immediate joiner and available for interviews at your convenience.
+I am available to join immediately and can attend interviews at your convenience.
 
-If my application was received, I would be grateful for any update regarding the next steps. If not, I have re-attached my resume for your reference.
+If my application was received, I would be grateful for any update regarding the next steps. If it was missed, I have re-attached my resume for your reference.
 
-Apologies for any inconvenience, and thank you for your time.
+Apologies for any inconvenience, and thank you for your valuable time.
 
-Regards,
-{name}
-{phone}"""
+{sig}"""
 
     else:
-        subject = f"Application for Entry-Level Opportunity - {name}"
+        subject = f"Application for Entry-Level Opportunity — {name}"
         body = f"""{greeting}
 
-I hope you are doing well.
+I hope this email finds you well.
 
-I am writing to express my interest in any suitable entry-level opportunity available at your organization. I am a {degree} graduate from {university}, and I am eager to start my professional career.
+I am writing to express my interest in any suitable entry-level opportunity at your organization. I am a {degree} graduate from {university}, eager to launch my professional career and make meaningful contributions.
 
-I bring hands-on experience and skills in the following areas:
+I have hands-on experience and skills in the following areas:
 
-- Python (scripting and automation)
-- SQL (queries, joins, and data handling)
-- HTML5 and CSS3 (responsive web design)
-- MS Excel (VLOOKUP, Pivot Tables, data analysis, and reporting)
-- Data cleaning, data analysis, and business problem-solving
-- IT support, troubleshooting, and system setup
-- Research and documentation
+  • Python (scripting, automation, and data processing)
+  • SQL (queries, joins, data handling, and reporting)
+  • HTML5 and CSS3 (responsive web design)
+  • MS Excel (VLOOKUP, Pivot Tables, data analysis, dashboards)
+  • Data cleaning, analysis, and business problem-solving
+  • IT support, troubleshooting, and system setup
+  • Research, documentation, and report writing
 
 I am open to roles such as Research Associate, Data Analyst, Junior Developer, Web Developer, IT Support Executive, MIS Executive, QA Tester, or any other entry-level position where I can contribute and grow.
 
-I am an immediate joiner with no notice period. Please find my resume attached for your review. I would sincerely appreciate the opportunity to discuss how my skills align with your current requirements.
+I am available to join immediately with no notice period. My resume is attached for your review. I would sincerely appreciate the opportunity to discuss how my skills align with your requirements.
 
 Thank you for your time and consideration.
 
-Regards,
-{name}
-{phone}"""
+{sig}"""
 
     return subject, body
 
 def send_email(server, to_email, company, role, template_id="normal"):
     try:
         if company in ("Unknown Company", "N/A", "", "nan", None):
-            company = "your esteemed organization"
+            company = "your organization"
 
         subject, body = get_email_content(template_id, company, role, to_email)
 
@@ -307,13 +312,14 @@ def get_smtp():
 
 # ─── Main Logic ───────────────────────────────────────────
 
-FOLLOWUP_AFTER_DAYS = 3  # Send follow-up 3 days after original
+FOLLOWUP_AFTER_DAYS = 4  # Send follow-up 4 days after original (user requested)
 
 def send_followups(server):
     """
     Automatic Follow-Up System:
     - Scans mail_queue.json for emails with status='sent'
-    - If sent 3+ days ago AND followup_sent is not True, send follow-up
+    - If sent 4+ days ago AND followup_sent is not True, send follow-up
+    - SKIPS emails where response_received is True (reply-aware)
     - Only sends 1 follow-up per email, ever
     """
     queue_file = os.path.join(BASE_DIR, "mail_queue.json")
@@ -336,6 +342,9 @@ def send_followups(server):
             continue
         # Skip if already followed up
         if item.get("followup_sent"):
+            continue
+        # ── NEW: Skip if a response/reply was already received ──
+        if item.get("response_received"):
             continue
 
         # Check age: must be at least FOLLOWUP_AFTER_DAYS old
@@ -441,7 +450,7 @@ def main():
                     update_status(email, "sent")
                     sent_count += 1
                     with open(LOG_FILE, "a") as f: f.write(f"{email}\n")
-                    send_telegram(f"✅ *Mail Sent Today*\nSuccessfully fired off application to: `{email}`\nCompany: {company or 'N/A'}\nRole: {role or 'N/A'}")
+                    send_telegram(f"✅ *Mail Sent*\nTo: `{email}`\nCompany: {company or 'N/A'}\nRole: {role or 'N/A'}")
                 else:
                     new_att = attempts + 1
                     status = "failed" if new_att < MAX_ATTEMPTS else "permanently_failed"
@@ -452,7 +461,6 @@ def main():
                 time.sleep(gap)
         else:
             print("No pending emails.")
-            send_telegram("ℹ️ No pending emails in queue.")
 
         # ── AUTOMATIC FOLLOW-UP PHASE ──────────────────────
         print("\n📩 Starting follow-up phase...")
@@ -460,22 +468,63 @@ def main():
         
         server.quit()
         
-        # Report
+        # ── Count emails awaiting follow-up ──
+        queue_file = os.path.join(BASE_DIR, "mail_queue.json")
+        awaiting_followup = 0
+        try:
+            with open(queue_file, "r", encoding="utf-8") as f:
+                all_data = json.load(f)
+            now = datetime.now()
+            for item in all_data:
+                if item.get("status") == "sent" and not item.get("followup_sent") and not item.get("response_received"):
+                    sd_str = item.get("updated_at") or item.get("added_at", "")
+                    if sd_str:
+                        try:
+                            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+                                try:
+                                    sd = datetime.strptime(sd_str.strip(), fmt)
+                                    break
+                                except ValueError:
+                                    continue
+                            else:
+                                continue
+                            if (now - sd).days >= FOLLOWUP_AFTER_DAYS:
+                                awaiting_followup += 1
+                        except:
+                            pass
+        except:
+            pass
+
+        # ── DAILY SUMMARY REPORT ──────────────────────────
         remaining = len(to_send) - sent_count - failed_count if to_send else 0
-        report_msg = f"✅ *Sent: {sent_count}* | ❌ *Failed: {failed_count}*\n"
+        
+        report_msg = (
+            f"📋 *Daily Email Report*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"✅ *Sent:* {sent_count}\n"
+            f"❌ *Failed:* {failed_count}\n"
+        )
         if followup_count > 0:
-            report_msg += f"📩 *Follow-ups: {followup_count}*\n"
+            report_msg += f"📩 *Follow-ups Sent:* {followup_count}\n"
+        if awaiting_followup > 0:
+            report_msg += f"⏰ *Awaiting Follow-up:* {awaiting_followup}\n"
+        report_msg += f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         if remaining > 0:
-            report_msg += f"⏳ Queue: {remaining} remaining."
+            report_msg += f"⏳ Queue Remaining: {remaining}\n"
         else:
-            report_msg += "🎉 All items processed!"
+            if to_send:
+                report_msg += "🎉 All items processed!\n"
+            else:
+                report_msg += "ℹ️ No pending emails in queue.\n"
+        report_msg += f"\n📅 {datetime.now().strftime('%Y-%m-%d %H:%M')} IST"
+        
         send_telegram(report_msg)
         
         # Write local report
         try:
             with open(REPORT_FILE, 'a') as f:
                 f.write(f"\n--- {datetime.now().strftime('%Y-%m-%d %H:%M')} ---\n")
-                f.write(f"Sent: {sent_count} | Failed: {failed_count} | Follow-ups: {followup_count} | Remaining: {remaining}\n")
+                f.write(f"Sent: {sent_count} | Failed: {failed_count} | Follow-ups: {followup_count} | Awaiting: {awaiting_followup} | Remaining: {remaining}\n")
         except: pass
 
     finally:

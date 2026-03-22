@@ -1,11 +1,16 @@
 # ============================================================
-# PYTHONANYWHERE WEBHOOK BOT — bridge_app.py
-# Self-contained Flask app that handles Telegram messages
-# via webhook. No Replit needed!
+# PYTHONANYWHERE WEBHOOK BOT v2.0 — bridge_app.py
+# Full-featured Telegram email bot with:
+#   ✅ 2-step flow: Pick Template → Send Instantly / Schedule
+#   ✅ Clean email templates (no company/employee names)
+#   ✅ Auto 4-day follow-up system
+#   ✅ Smart email validation
+#   ✅ Full queue management commands
+#   ✅ Daily summary notifications
 # ============================================================
 
 import os, sys, json, re, hashlib, time, smtplib, logging, io
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
@@ -35,6 +40,8 @@ YOUR_NAME   = os.environ.get("YOUR_NAME", "Akshat Tripathi")
 PHONE       = os.environ.get("PHONE", "+91-7081484808")
 UNIVERSITY  = os.environ.get("UNIVERSITY", "Guru Gobind Singh Indraprastha University, New Delhi")
 DEGREE      = os.environ.get("DEGREE", "BCA")
+LINKEDIN    = os.environ.get("LINKEDIN", "linkedin.com/in/akshattripathi7081")
+GITHUB      = os.environ.get("GITHUB", "github.com/akshat7081")
 
 QUEUE_FILE   = os.path.join(BASE_DIR, "mail_queue.json")
 SENT_LOG     = os.path.join(BASE_DIR, "sent_log.txt")
@@ -43,6 +50,9 @@ DATA_DIR     = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 PA_URL = f"https://{USERNAME}.pythonanywhere.com"
+
+# Follow-up configuration
+FOLLOWUP_AFTER_DAYS = 4  # Auto follow-up after 4 days of no reply
 
 # Logging
 logging.basicConfig(level=logging.INFO)
@@ -83,19 +93,65 @@ def edit_message(chat_id, message_id, text, parse_mode="Markdown", reply_markup=
         data["reply_markup"] = reply_markup
     return tg_api("editMessageText", data)
 
-# ─── Email Extraction ──────────────────────────────────────
+# ─── Email Extraction & Validation ──────────────────────────
 
 EMAIL_RE = re.compile(
     r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}",
     re.IGNORECASE
 )
+
 BLACKLIST_DOMAINS = {
     "example.com", "test.com", "email.com", "domain.com",
     "yourcompany.com", "company.com", "abc.com", "xyz.com",
     "sentry.io", "github.com", "gitlab.com",
 }
 
+# Spammy TLDs to reject
+SPAMMY_TLDS = {
+    ".xyz", ".top", ".buzz", ".click", ".link",
+    ".gq", ".ml", ".cf", ".tk", ".ga",
+    ".work", ".icu", ".fun",
+}
+
+# Free email providers — allowed but flagged
+FREE_DOMAINS = {
+    "gmail.com", "yahoo.com", "hotmail.com", "outlook.com",
+    "rediffmail.com", "aol.com", "protonmail.com", "ymail.com",
+    "live.com", "icloud.com", "mail.com",
+}
+
+def validate_email_quality(email):
+    """
+    Returns (is_valid, quality_flag, reason)
+    quality_flag: 'good' | 'free' | 'blocked'
+    """
+    email = email.lower().strip()
+    if not EMAIL_RE.match(email):
+        return False, "blocked", "Invalid format"
+
+    domain = email.split("@")[1] if "@" in email else ""
+
+    if domain in BLACKLIST_DOMAINS:
+        return False, "blocked", "Blacklisted domain"
+
+    # Check spammy TLDs
+    for tld in SPAMMY_TLDS:
+        if domain.endswith(tld):
+            return False, "blocked", f"Spammy TLD ({tld})"
+
+    # Check image-like emails
+    if email.endswith((".png", ".jpg", ".jpeg", ".gif", ".svg")):
+        return False, "blocked", "Image extension"
+
+    # Flag free email domains
+    if domain in FREE_DOMAINS:
+        return True, "free", f"Free email ({domain})"
+
+    return True, "good", "Corporate/valid"
+
+
 def extract_emails(text):
+    """Extract and validate emails from text."""
     raw = EMAIL_RE.findall(text or "")
     valid = []
     seen = set()
@@ -104,13 +160,11 @@ def extract_emails(text):
         if e in seen:
             continue
         seen.add(e)
-        domain = e.split("@")[1] if "@" in e else ""
-        if domain in BLACKLIST_DOMAINS:
-            continue
-        if e.endswith((".png", ".jpg", ".jpeg", ".gif", ".svg")):
-            continue
-        valid.append(e)
+        is_valid, quality, reason = validate_email_quality(e)
+        if is_valid:
+            valid.append(e)
     return valid
+
 
 def is_valid_email(email):
     return bool(EMAIL_RE.match(email or ""))
@@ -154,14 +208,16 @@ def add_to_queue(email, company, role, template="normal", status="pending"):
     queue.append({
         "id": hashlib.md5(f"{email}{time.time()}".encode()).hexdigest()[:8],
         "email": email,
-        "company": company or "Unknown Company",
+        "company": company or "Unknown",
         "role": role or "Entry-Level Opportunity",
         "template": template,
         "status": status,
         "attempts": 0,
         "added_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "error": None
+        "error": None,
+        "followup_sent": False,
+        "response_received": False,
     })
     save_queue(queue)
 
@@ -206,129 +262,149 @@ def extract_job_details(text):
         "emails": extract_emails(text)
     }
 
-# ─── Email Templates (synced with mail.py) ──────────────────
+# ─── Email Templates v2.0 (Cleaner, No Company Names) ──────
 
 TEMPLATES = {
-    "normal":   {"name": "General IT / All Roles", "emoji": "💻"},
-    "research": {"name": "Research Associate",     "emoji": "🔬"},
-    "analytics":{"name": "Data Analytics",         "emoji": "📊"},
-    "followup": {"name": "Follow-Up Email",        "emoji": "🔄"},
+    "normal": {
+        "name": "General IT / All Roles",
+        "emoji": "💻",
+        "description": "Python, SQL, HTML, Excel — general application",
+    },
+    "research": {
+        "name": "Research Associate",
+        "emoji": "🔬",
+        "description": "Research, data collection, documentation",
+    },
+    "analytics": {
+        "name": "Data Analytics",
+        "emoji": "📊",
+        "description": "Data Analyst, MIS, BI roles",
+    },
+    "followup": {
+        "name": "Follow-Up Email",
+        "emoji": "🔄",
+        "description": "Polite follow-up after no response",
+    },
 }
 
+def _signature_block():
+    """Professional signature block with contact links."""
+    return (
+        f"Regards,\n"
+        f"{YOUR_NAME}\n"
+        f"{PHONE}\n"
+        f"LinkedIn: {LINKEDIN}\n"
+        f"GitHub: {GITHUB}"
+    )
+
+
 def get_email_content(template_id, to_email=""):
+    """Generate professional email content — no company/employee names injected."""
     greeting = "Hello Ma'am/Sir,"
     name = YOUR_NAME
-    phone = PHONE
     degree = DEGREE
     university = UNIVERSITY
+    sig = _signature_block()
 
     if template_id == "research":
-        subject = f"Application for Research Associate Position - {name}"
+        subject = f"Application for Research Associate Position — {name}"
         body = f"""{greeting}
 
-I hope you are doing well.
+I hope this email finds you well.
 
-I am writing to express my interest in the Research Associate / Research Assistant position at your organization. I am a {degree} graduate from {university}, and I am keen to contribute to research-driven work.
+I am writing to express my interest in the Research Associate / Research Assistant position at your organization. I am a {degree} graduate from {university}, eager to contribute to impactful research-driven work.
 
-I bring skills and experience in the following areas:
+My key competencies include:
 
-- Data collection, cleaning, and analysis (Python, Excel, SQL)
-- Literature review and academic research methodology
-- Statistical analysis and data interpretation
-- Technical documentation and report writing
-- Survey design, data gathering, and synthesis
-- MS Office proficiency (Word, Excel, PowerPoint)
-- Database management (MySQL, data modelling)
-- Internet research and information compilation
+  • Data collection, cleaning, and analysis using Python, Excel, and SQL
+  • Literature review and academic research methodology
+  • Statistical analysis and data interpretation
+  • Technical documentation and research report writing
+  • Survey design, data gathering, and synthesis
+  • MS Office proficiency (Word, Excel, PowerPoint)
+  • Database management (MySQL, data modelling)
+  • Internet research and information compilation
 
-I have strong analytical thinking, attention to detail, and the ability to work both independently and in a team. I am a quick learner and passionate about contributing to meaningful research.
+I am detail-oriented, analytically strong, and capable of working both independently and collaboratively. I am passionate about contributing meaningfully to research initiatives.
 
-I am an immediate joiner with no notice period. Please find my resume attached for your review. I would sincerely appreciate the opportunity to discuss how my skills can support the research goals at your organization.
+I am available to join immediately with no notice period. My resume is attached for your reference. I would greatly appreciate the opportunity to discuss how my skills can support your research objectives.
 
 Thank you for your time and consideration.
 
-Regards,
-{name}
-{phone}"""
+{sig}"""
 
     elif template_id == "analytics":
-        subject = f"Application for Data Analyst Position - {name}"
+        subject = f"Application for Data Analyst Position — {name}"
         body = f"""{greeting}
 
-I hope you are doing well.
+I hope this email finds you well.
 
-I am writing to apply for data analytics opportunities at your organization. I am a {degree} graduate from {university}, with a strong interest in turning data into actionable insights.
+I am writing to apply for data analytics opportunities at your organization. I am a {degree} graduate from {university}, with a strong foundation in transforming raw data into actionable business insights.
 
-I bring hands-on skills in the following areas:
+My technical skills include:
 
-- Python for data analysis (Pandas, NumPy, Matplotlib)
-- SQL (complex queries, joins, aggregations, window functions)
-- Advanced MS Excel (Pivot Tables, VLOOKUP, Power Query, dashboards)
-- Data cleaning, preprocessing, and transformation
-- Data visualization and reporting
-- Statistical analysis and trend identification
-- MIS reporting and business intelligence basics
-- Database management (MySQL, data modelling)
+  • Python for data analysis (Pandas, NumPy, Matplotlib, Seaborn)
+  • SQL (complex queries, joins, aggregations, window functions, CTEs)
+  • Advanced MS Excel (Pivot Tables, VLOOKUP, Power Query, dashboards)
+  • Data cleaning, preprocessing, and transformation pipelines
+  • Data visualization and business reporting
+  • Statistical analysis and trend identification
+  • MIS reporting and business intelligence fundamentals
+  • Database management (MySQL, data modelling)
 
-I have worked on projects involving sales data analysis, customer segmentation, automated reporting dashboards, and data cleaning pipelines.
+I have worked on projects involving sales data analysis, customer segmentation, automated reporting dashboards, and ETL pipelines.
 
-I am open to roles such as Data Analyst, Business Analyst, MIS Analyst, Junior BI Developer, Analytics Executive, or any data-focused entry-level position.
+I am open to roles such as Data Analyst, Business Analyst, MIS Analyst, Junior BI Developer, Analytics Executive, or any data-focused position.
 
-I am an immediate joiner with no notice period. Please find my resume attached for your review. I would be grateful for the opportunity to contribute data-driven insights at your organization.
+I am available to join immediately with no notice period. My resume is attached for your review. I would welcome the opportunity to bring data-driven insights to your team.
 
 Thank you for your time and consideration.
 
-Regards,
-{name}
-{phone}"""
+{sig}"""
 
     elif template_id == "followup":
-        subject = f"Following Up - Job Application - {name}"
+        subject = f"Following Up — Job Application — {name}"
         body = f"""{greeting}
 
 I hope you are doing well.
 
-I am writing to follow up on my previous application for entry-level opportunities at your organization, which I had sent a few days ago.
+I am writing to politely follow up on my previous application that I had sent a few days ago. I remain genuinely interested in contributing to your team and wanted to reaffirm my enthusiasm for the opportunity.
 
-I remain very interested in contributing to your team and wanted to reiterate my enthusiasm for the opportunity. I am a {degree} graduate with skills in Python, SQL, HTML/CSS, Excel, data analysis, and IT support.
+I am a {degree} graduate with hands-on skills in Python, SQL, HTML/CSS, Excel, data analysis, and IT support. I am a quick learner who is eager to contribute and grow.
 
-I am an immediate joiner and available for interviews at your convenience.
+I am available to join immediately and can attend interviews at your convenience.
 
-If my application was received, I would be grateful for any update regarding the next steps. If not, I have re-attached my resume for your reference.
+If my application was received, I would be grateful for any update regarding the next steps. If it was missed, I have re-attached my resume for your reference.
 
-Apologies for any inconvenience, and thank you for your time.
+Apologies for any inconvenience, and thank you for your valuable time.
 
-Regards,
-{name}
-{phone}"""
+{sig}"""
 
-    else:  # normal
-        subject = f"Application for Entry-Level Opportunity - {name}"
+    else:  # normal — general IT
+        subject = f"Application for Entry-Level Opportunity — {name}"
         body = f"""{greeting}
 
-I hope you are doing well.
+I hope this email finds you well.
 
-I am writing to express my interest in any suitable entry-level opportunity available at your organization. I am a {degree} graduate from {university}, and I am eager to start my professional career.
+I am writing to express my interest in any suitable entry-level opportunity at your organization. I am a {degree} graduate from {university}, eager to launch my professional career and make meaningful contributions.
 
-I bring hands-on experience and skills in the following areas:
+I have hands-on experience and skills in the following areas:
 
-- Python (scripting and automation)
-- SQL (queries, joins, and data handling)
-- HTML5 and CSS3 (responsive web design)
-- MS Excel (VLOOKUP, Pivot Tables, data analysis, and reporting)
-- Data cleaning, data analysis, and business problem-solving
-- IT support, troubleshooting, and system setup
-- Research and documentation
+  • Python (scripting, automation, and data processing)
+  • SQL (queries, joins, data handling, and reporting)
+  • HTML5 and CSS3 (responsive web design)
+  • MS Excel (VLOOKUP, Pivot Tables, data analysis, dashboards)
+  • Data cleaning, analysis, and business problem-solving
+  • IT support, troubleshooting, and system setup
+  • Research, documentation, and report writing
 
 I am open to roles such as Research Associate, Data Analyst, Junior Developer, Web Developer, IT Support Executive, MIS Executive, QA Tester, or any other entry-level position where I can contribute and grow.
 
-I am an immediate joiner with no notice period. Please find my resume attached for your review. I would sincerely appreciate the opportunity to discuss how my skills align with your current requirements.
+I am available to join immediately with no notice period. My resume is attached for your review. I would sincerely appreciate the opportunity to discuss how my skills align with your requirements.
 
 Thank you for your time and consideration.
 
-Regards,
-{name}
-{phone}"""
+{sig}"""
 
     return subject, body
 
@@ -358,7 +434,7 @@ def send_email_now(to_email, template_id="normal"):
                                 'attachment; filename="resume.pdf"')
                 msg.attach(part)
 
-        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server = smtplib.SMTP("smtp.gmail.com", 587, timeout=30)
         server.starttls()
         server.login(GMAIL_EMAIL, GMAIL_PASS)
         server.sendmail(GMAIL_EMAIL, to_email, msg.as_string())
@@ -403,7 +479,7 @@ def download_tg_file(file_id):
         return None
 
 
-# ─── Pending data store (in-memory per process, file-backed) ─
+# ─── Pending data store (file-backed for PA WSGI) ──────────
 PENDING_FILE = os.path.join(DATA_DIR, "pending_actions.json")
 
 def load_pending():
@@ -429,22 +505,29 @@ def escape_md(text):
     return text
 
 
-# ─── MESSAGE HANDLERS ──────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+#  MESSAGE HANDLERS
+# ═══════════════════════════════════════════════════════════
 
 def handle_text(chat_id, text, message_id):
-    """Handle incoming text message — extract emails, show options."""
+    """Handle incoming text message — extract emails, show template picker (Step 1)."""
     emails = extract_emails(text)
 
     if not emails:
-        # Not a job post with emails, just acknowledge
         return
 
-    # Check duplicates
+    # Check duplicates and quality
     valid = []
+    free_domain_flags = []
     for e in emails:
         already, status = is_already_processed(e)
-        if not already:
+        if already:
+            continue
+        is_ok, quality, reason = validate_email_quality(e)
+        if is_ok:
             valid.append(e)
+            if quality == "free":
+                free_domain_flags.append(f"  ⚠️ {e} ({reason})")
 
     if not valid:
         status_lines = []
@@ -452,7 +535,7 @@ def handle_text(chat_id, text, message_id):
             _, st = is_already_processed(e)
             if st == "sent":
                 status_lines.append(f"  ✅ {e} (Already sent)")
-            elif st == "queued" or st == "pending":
+            elif st in ("queued", "pending"):
                 status_lines.append(f"  🕒 {e} (In queue)")
             else:
                 status_lines.append(f"  ⚙️ {e} (Processed)")
@@ -464,7 +547,7 @@ def handle_text(chat_id, text, message_id):
     company = details["companies"][0]
     role = details["roles"][0]
 
-    # Store pending action (file-backed for PA WSGI)
+    # Store pending action
     data_key = hashlib.md5(f"{valid[0]}{time.time()}".encode()).hexdigest()[:6]
     pending = load_pending()
     pending[data_key] = {
@@ -475,20 +558,20 @@ def handle_text(chat_id, text, message_id):
     }
     save_pending(pending)
 
-    # Build template picker buttons
+    # ── STEP 1: Template Picker Only (no send buttons yet) ──
     buttons = []
     for tid, info in TEMPLATES.items():
         if tid == "followup":
             continue
         buttons.append([{
             "text": f"{info['emoji']} {info['name']}",
-            "callback_data": f"tmpl_{tid}_{data_key}"
+            "callback_data": f"pick_{tid}_{data_key}"
         }])
 
-    buttons.append([
-        {"text": "🚀 Send Instantly (Normal)", "callback_data": f"israw_{data_key}"},
-        {"text": "⏰ Schedule 8 AM", "callback_data": f"sched_{data_key}"}
-    ])
+    buttons.append([{
+        "text": "❌ Cancel — Don't Send",
+        "callback_data": f"cancel_{data_key}"
+    }])
 
     status_lines = []
     for e in list(set(emails)):
@@ -498,6 +581,11 @@ def handle_text(chat_id, text, message_id):
             _, st = is_already_processed(e)
             status_lines.append(f"  ✅ {e} (Already {st})")
 
+    # Free domain warnings
+    warning = ""
+    if free_domain_flags:
+        warning = "\n\n⚠️ *Free Email Detected:*\n" + "\n".join(free_domain_flags)
+
     send_message(
         chat_id,
         f"🎯 *Job Post Detected!*\n"
@@ -506,8 +594,9 @@ def handle_text(chat_id, text, message_id):
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"📧 Total Found: {len(set(emails))}\n"
         f"✅ New Ready: {len(valid)}\n\n"
-        f"*Status:*\n" + "\n".join(status_lines) + "\n\n"
-        f"👇 *Select Template or Send Instantly:*",
+        f"*Status:*\n" + "\n".join(status_lines) +
+        warning + "\n\n"
+        f"👇 *Step 1: Choose Email Template:*",
         reply_markup={"inline_keyboard": buttons}
     )
 
@@ -533,12 +622,15 @@ def handle_photo(chat_id, file_id, message_id, caption=""):
                      f"📝 *OCR Text Extracted:*\n```\n{text[:500]}\n```\n\n⚠️ No email addresses found in this image.")
         return
 
-    # Found emails — treat as text
     handle_text(chat_id, text, message_id)
 
 
+# ═══════════════════════════════════════════════════════════
+#  CALLBACK HANDLER — 2-STEP FLOW
+# ═══════════════════════════════════════════════════════════
+
 def handle_callback(callback_query):
-    """Handle inline button presses."""
+    """Handle inline button presses — 2-step flow."""
     cb_id = callback_query["id"]
     data = callback_query.get("data", "")
     chat_id = callback_query["message"]["chat"]["id"]
@@ -546,8 +638,11 @@ def handle_callback(callback_query):
 
     pending = load_pending()
 
-    # ── Template select: tmpl_{tid}_{key} ──
-    if data.startswith("tmpl_"):
+    # ══════════════════════════════════════════════════════
+    # STEP 1 CALLBACK: pick_{tid}_{key}
+    #   User chose a template → now show send mode buttons
+    # ══════════════════════════════════════════════════════
+    if data.startswith("pick_"):
         parts = data.split("_", 2)
         if len(parts) < 3:
             answer_callback(cb_id, "Invalid callback")
@@ -557,89 +652,107 @@ def handle_callback(callback_query):
 
         info = pending.get(key)
         if not info:
-            answer_callback(cb_id, "⏳ Expired. Send again.")
+            answer_callback(cb_id, "⏳ Expired. Forward again.")
             return
 
-        emails = info["emails"]
-        company = info["company"]
-        role = info["role"]
-
-        sent = 0
-        failed = 0
-        for email in emails:
-            already, _ = is_already_processed(email)
-            if already:
-                continue
-            ok, err = send_email_now(email, tid)
-            if ok:
-                sent += 1
-                # Add to queue as sent for tracking
-                add_to_queue(email, company, role, tid, "sent")
-            else:
-                failed += 1
-
-        # Cleanup
-        pending.pop(key, None)
+        # Save template choice
+        info["template"] = tid
         save_pending(pending)
 
         tname = TEMPLATES.get(tid, {}).get("name", tid)
-        answer_callback(cb_id, f"✅ Sent {sent} emails!")
-        edit_message(chat_id, msg_id,
-                     f"✅ *Sent!*\n"
-                     f"📬 Template: {tname}\n"
-                     f"✅ Sent: {sent} | ❌ Failed: {failed}")
+        temoji = TEMPLATES.get(tid, {}).get("emoji", "📧")
 
-    # ── Instant Send Raw: israw_{key} ──
-    elif data.startswith("israw_"):
-        key = data[6:]
+        # Show Step 2: Send Mode
+        mode_buttons = [[
+            {"text": "🚀 Send Instantly", "callback_data": f"send_{key}"},
+            {"text": "⏰ Schedule (8 AM)", "callback_data": f"queue_{key}"},
+        ], [
+            {"text": "🔙 Back to Templates", "callback_data": f"back_{key}"},
+            {"text": "❌ Cancel", "callback_data": f"cancel_{key}"},
+        ]]
+
+        answer_callback(cb_id, f"✅ Template: {tname}")
+        edit_message(chat_id, msg_id,
+            f"📋 *Template Selected:* {temoji} {tname}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📧 Emails: {len(info['emails'])}\n"
+            f"🏢 Company: *{info.get('company', 'Unknown')}*\n"
+            f"💼 Role: *{info.get('role', 'N/A')}*\n\n"
+            f"👇 *Step 2: Choose Send Mode:*",
+            reply_markup={"inline_keyboard": mode_buttons}
+        )
+
+    # ══════════════════════════════════════════════════════
+    # STEP 2a: send_{key} — SEND INSTANTLY
+    # ══════════════════════════════════════════════════════
+    elif data.startswith("send_"):
+        key = data[5:]
         info = pending.get(key)
         if not info:
-            answer_callback(cb_id, "⏳ Expired. Send again.")
+            answer_callback(cb_id, "⏳ Expired. Forward again.")
             return
 
         emails = info["emails"]
-        company = info["company"]
-        role = info["role"]
+        company = info.get("company", "Unknown")
+        role = info.get("role", "N/A")
+        tid = info.get("template", "normal")
+        tname = TEMPLATES.get(tid, {}).get("name", tid)
 
         sent = 0
         failed = 0
-        for email in emails:
-            already, _ = is_already_processed(email)
+        results = []
+        for em in emails:
+            already, _ = is_already_processed(em)
             if already:
+                results.append(f"  ⏭️ {em} (skipped — already processed)")
                 continue
-            ok, err = send_email_now(email, "normal")
+            ok, err = send_email_now(em, tid)
             if ok:
                 sent += 1
-                add_to_queue(email, company, role, "normal", "sent")
+                add_to_queue(em, company, role, tid, "sent")
+                results.append(f"  ✅ {em}")
             else:
                 failed += 1
+                results.append(f"  ❌ {em} ({err[:30]})")
 
         pending.pop(key, None)
         save_pending(pending)
 
-        answer_callback(cb_id, f"🚀 Sent {sent} emails!")
+        answer_callback(cb_id, f"🚀 Done! Sent: {sent}")
+        result_text = "\n".join(results) if results else "  No emails to send"
         edit_message(chat_id, msg_id,
-                     f"🚀 *Instantly Sent!*\n"
-                     f"✅ Sent: {sent} | ❌ Failed: {failed}")
+            f"🚀 *Instantly Sent!*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📬 Template: *{tname}*\n"
+            f"✅ Sent: *{sent}* | ❌ Failed: *{failed}*\n\n"
+            f"*Results:*\n{result_text}\n\n"
+            f"📩 Follow-up will auto-send in {FOLLOWUP_AFTER_DAYS} days if no reply."
+        )
 
-    # ── Schedule for 8 AM: sched_{key} ──
-    elif data.startswith("sched_"):
+    # ══════════════════════════════════════════════════════
+    # STEP 2b: queue_{key} — SCHEDULE FOR 8 AM
+    # ══════════════════════════════════════════════════════
+    elif data.startswith("queue_"):
         key = data[6:]
         info = pending.get(key)
         if not info:
-            answer_callback(cb_id, "⏳ Expired. Send again.")
+            answer_callback(cb_id, "⏳ Expired. Forward again.")
             return
 
         emails = info["emails"]
-        company = info["company"]
-        role = info["role"]
+        company = info.get("company", "Unknown")
+        role = info.get("role", "N/A")
+        tid = info.get("template", "normal")
+        tname = TEMPLATES.get(tid, {}).get("name", tid)
 
         queued = 0
-        for email in emails:
-            already, _ = is_already_processed(email)
+        skipped = 0
+        for em in emails:
+            already, _ = is_already_processed(em)
             if already:
+                skipped += 1
                 continue
-            add_to_queue(email, company, role, "normal", "pending")
+            add_to_queue(em, company, role, tid, "pending")
             queued += 1
 
         pending.pop(key, None)
@@ -647,23 +760,432 @@ def handle_callback(callback_query):
 
         answer_callback(cb_id, f"⏰ Queued {queued} for 8 AM!")
         edit_message(chat_id, msg_id,
-                     f"⏰ *Scheduled for 8 AM!*\n"
-                     f"📬 Queued: {queued} emails\n"
-                     f"PA will send them at 8:00 AM IST.")
+            f"⏰ *Scheduled for 8 AM IST!*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📬 Template: *{tname}*\n"
+            f"📥 Queued: *{queued}* emails\n"
+            + (f"⏭️ Skipped: *{skipped}* (duplicates)\n" if skipped else "") +
+            f"\nPA scheduled task will send at 8:00 AM.\n"
+            f"📩 Auto follow-up in {FOLLOWUP_AFTER_DAYS} days if no reply."
+        )
+
+    # ══════════════════════════════════════════════════════
+    # BACK: back_{key} — Go back to template picker
+    # ══════════════════════════════════════════════════════
+    elif data.startswith("back_"):
+        key = data[5:]
+        info = pending.get(key)
+        if not info:
+            answer_callback(cb_id, "⏳ Expired. Forward again.")
+            return
+
+        # Rebuild template buttons
+        buttons = []
+        for tid, tinfo in TEMPLATES.items():
+            if tid == "followup":
+                continue
+            buttons.append([{
+                "text": f"{tinfo['emoji']} {tinfo['name']}",
+                "callback_data": f"pick_{tid}_{key}"
+            }])
+        buttons.append([{
+            "text": "❌ Cancel — Don't Send",
+            "callback_data": f"cancel_{key}"
+        }])
+
+        answer_callback(cb_id, "🔙 Back to templates")
+        edit_message(chat_id, msg_id,
+            f"🎯 *Choose Template:*\n"
+            f"📧 Emails: {len(info['emails'])}\n\n"
+            f"👇 *Step 1: Select email template:*",
+            reply_markup={"inline_keyboard": buttons}
+        )
+
+    # ══════════════════════════════════════════════════════
+    # CANCEL: cancel_{key}
+    # ══════════════════════════════════════════════════════
+    elif data.startswith("cancel_"):
+        key = data[7:]
+        pending.pop(key, None)
+        save_pending(pending)
+
+        answer_callback(cb_id, "❌ Cancelled")
+        edit_message(chat_id, msg_id,
+            "❌ *Cancelled.*\n\nNo emails were sent. Forward another job post whenever ready.")
+
+    # ══════════════════════════════════════════════════════
+    # CLEAR CONFIRMATION: clearyes / clearno
+    # ══════════════════════════════════════════════════════
+    elif data == "clearyes":
+        queue = load_queue()
+        removed = sum(1 for x in queue if x.get("status") == "pending")
+        queue = [x for x in queue if x.get("status") != "pending"]
+        save_queue(queue)
+        answer_callback(cb_id, f"🗑️ Cleared {removed} pending!")
+        edit_message(chat_id, msg_id,
+            f"🗑️ *Queue Cleared!*\n\n"
+            f"Removed *{removed}* pending emails.\n"
+            f"Sent emails preserved for follow-up tracking.")
+
+    elif data == "clearno":
+        answer_callback(cb_id, "✅ Kept queue!")
+        edit_message(chat_id, msg_id, "✅ *Queue kept intact.* Nothing was deleted.")
+
     else:
         answer_callback(cb_id, "Unknown action")
 
 
-# ─── Flask App ──────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+#  BOT COMMANDS
+# ═══════════════════════════════════════════════════════════
+
+def handle_command(chat_id, text, message_id):
+    """Route /commands to handlers."""
+    parts = text.strip().split()
+    cmd = parts[0].lower()
+    args = parts[1:] if len(parts) > 1 else []
+
+    if cmd == "/start":
+        cmd_start(chat_id)
+    elif cmd == "/help":
+        cmd_help(chat_id)
+    elif cmd == "/status":
+        cmd_status(chat_id)
+    elif cmd == "/queue":
+        cmd_queue(chat_id)
+    elif cmd == "/stats":
+        cmd_stats(chat_id)
+    elif cmd == "/followups":
+        cmd_followups(chat_id)
+    elif cmd == "/clear":
+        cmd_clear(chat_id)
+    elif cmd == "/cancel":
+        cmd_cancel(chat_id, args)
+    elif cmd == "/preview":
+        cmd_preview(chat_id, args)
+    else:
+        send_message(chat_id, f"❓ Unknown command: `{cmd}`\n\nType /help for all commands.")
+
+
+def cmd_start(chat_id):
+    send_message(chat_id,
+        "👋 *Email Bot v2.0 — Live on PythonAnywhere!*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📸 Send a *screenshot* of a job post\n"
+        "📝 Or *forward/paste text* with email addresses\n\n"
+        "✨ *Features:*\n"
+        "  📋 3 professional email templates\n"
+        "  🚀 Instant send or ⏰ scheduled send\n"
+        "  📩 Auto follow-up after 4 days\n"
+        "  📊 Queue management & stats\n"
+        "  🔍 Smart email validation\n"
+        "  📬 Reply tracking & inbox monitoring\n\n"
+        "Type /help for all commands ✅"
+    )
+
+
+def cmd_help(chat_id):
+    send_message(chat_id,
+        "📖 *All Commands*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📊 *Status & Info:*\n"
+        "  /status — Quick queue overview\n"
+        "  /stats — Detailed send statistics\n"
+        "  /queue — Full queue with all emails\n"
+        "  /followups — Emails due for follow-up\n\n"
+        "⚙️ *Queue Management:*\n"
+        "  /clear — Clear all pending emails\n"
+        "  /cancel `<email>` — Cancel specific email\n\n"
+        "📧 *Email:*\n"
+        "  /preview `<template>` — Preview template\n"
+        "     Templates: `normal`, `research`, `analytics`\n\n"
+        "💡 *How to Use:*\n"
+        "  1️⃣ Forward a job post or send a screenshot\n"
+        "  2️⃣ Choose a template (Step 1)\n"
+        "  3️⃣ Send instantly or schedule for 8 AM (Step 2)\n"
+        "  4️⃣ Bot auto-follows up after 4 days! 🔄"
+    )
+
+
+def cmd_status(chat_id):
+    queue = load_queue()
+    pending = [x for x in queue if x.get("status") == "pending"]
+    sent = [x for x in queue if x.get("status") == "sent"]
+    failed = [x for x in queue if x.get("status") in ("failed", "permanently_failed")]
+    bounced = [x for x in queue if x.get("status") == "bounced"]
+    followup_due = []
+    followup_sent = [x for x in queue if x.get("followup_sent")]
+    replied = [x for x in queue if x.get("response_received")]
+
+    now = datetime.now()
+    for item in sent:
+        if item.get("followup_sent") or item.get("response_received"):
+            continue
+        sent_date_str = item.get("updated_at") or item.get("added_at", "")
+        if sent_date_str:
+            try:
+                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+                    try:
+                        sd = datetime.strptime(sent_date_str.strip(), fmt)
+                        break
+                    except ValueError:
+                        continue
+                else:
+                    continue
+                if (now - sd).days >= FOLLOWUP_AFTER_DAYS:
+                    followup_due.append(item)
+            except:
+                pass
+
+    send_message(chat_id,
+        "📊 *Queue Status*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"⏳ Pending: *{len(pending)}*\n"
+        f"✅ Sent: *{len(sent)}*\n"
+        f"❌ Failed: *{len(failed)}*\n"
+        f"📭 Bounced: *{len(bounced)}*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔄 Follow-ups Sent: *{len(followup_sent)}*\n"
+        f"📩 Follow-ups Due: *{len(followup_due)}*\n"
+        f"💬 Replies Received: *{len(replied)}*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📬 Total in Queue: *{len(queue)}*"
+    )
+
+
+def cmd_queue(chat_id):
+    queue = load_queue()
+    if not queue:
+        send_message(chat_id, "📭 *Queue is empty!*\n\nForward a job post to get started.")
+        return
+
+    # Show recent 15 items
+    lines = []
+    status_emoji = {
+        "pending": "⏳", "sent": "✅", "failed": "❌",
+        "bounced": "📭", "sending": "📤",
+        "permanently_failed": "💀",
+    }
+    for item in queue[-15:]:
+        st = item.get("status", "?")
+        emoji = status_emoji.get(st, "❓")
+        email = item.get("email", "?")
+        tmpl = item.get("template", "normal")
+        date = item.get("added_at", "?")
+        fu = " 🔄" if item.get("followup_sent") else ""
+        rp = " 💬" if item.get("response_received") else ""
+        lines.append(f"{emoji} `{email}`\n     📋 {tmpl} | 📅 {date}{fu}{rp}")
+
+    msg = (
+        f"📬 *Email Queue* (last {min(15, len(queue))} of {len(queue)})\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        + "\n\n".join(lines) +
+        "\n\n_🔄 = follow-up sent | 💬 = reply received_"
+    )
+    send_message(chat_id, msg)
+
+
+def cmd_stats(chat_id):
+    queue = load_queue()
+    total = len(queue)
+    sent = sum(1 for x in queue if x.get("status") == "sent")
+    failed = sum(1 for x in queue if x.get("status") in ("failed", "permanently_failed"))
+    pending = sum(1 for x in queue if x.get("status") == "pending")
+    bounced = sum(1 for x in queue if x.get("status") == "bounced")
+    followups = sum(1 for x in queue if x.get("followup_sent"))
+    replies = sum(1 for x in queue if x.get("response_received"))
+
+    success_rate = f"{(sent / total * 100):.1f}" if total > 0 else "0"
+
+    # Count by template
+    template_counts = {}
+    for item in queue:
+        t = item.get("template", "normal")
+        template_counts[t] = template_counts.get(t, 0) + 1
+
+    tmpl_lines = []
+    for t, c in sorted(template_counts.items(), key=lambda x: -x[1]):
+        emoji = TEMPLATES.get(t, {}).get("emoji", "📧")
+        name = TEMPLATES.get(t, {}).get("name", t)
+        tmpl_lines.append(f"  {emoji} {name}: *{c}*")
+
+    # Today's activity
+    today = datetime.now().strftime("%Y-%m-%d")
+    sent_today = sum(1 for x in queue
+                     if x.get("status") == "sent" and
+                     (x.get("updated_at", "") or "").startswith(today))
+
+    send_message(chat_id,
+        "📈 *Email Statistics*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📬 Total Emails: *{total}*\n"
+        f"✅ Successfully Sent: *{sent}*\n"
+        f"❌ Failed: *{failed}*\n"
+        f"📭 Bounced: *{bounced}*\n"
+        f"⏳ Pending: *{pending}*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 Success Rate: *{success_rate}%*\n"
+        f"📅 Sent Today: *{sent_today}*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔄 Follow-ups Sent: *{followups}*\n"
+        f"💬 Replies Received: *{replies}*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📋 *By Template:*\n" + "\n".join(tmpl_lines)
+    )
+
+
+def cmd_followups(chat_id):
+    queue = load_queue()
+    now = datetime.now()
+
+    due = []
+    sent_already = []
+    for item in queue:
+        if item.get("status") != "sent":
+            continue
+        if item.get("response_received"):
+            continue
+
+        sent_date_str = item.get("updated_at") or item.get("added_at", "")
+        if not sent_date_str:
+            continue
+
+        try:
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+                try:
+                    sd = datetime.strptime(sent_date_str.strip(), fmt)
+                    break
+                except ValueError:
+                    continue
+            else:
+                continue
+            days = (now - sd).days
+        except:
+            continue
+
+        if item.get("followup_sent"):
+            sent_already.append((item, days))
+        elif days >= FOLLOWUP_AFTER_DAYS:
+            due.append((item, days))
+
+    if not due and not sent_already:
+        send_message(chat_id,
+            "📩 *Follow-Up Tracker*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "No follow-ups due or sent yet.\n"
+            f"Follow-ups trigger after {FOLLOWUP_AFTER_DAYS} days of no reply.")
+        return
+
+    lines = []
+    if due:
+        lines.append(f"⏰ *Due for Follow-Up ({len(due)}):*")
+        for item, days in due[:10]:
+            lines.append(f"  📧 `{item['email']}` — {days} days ago")
+
+    if sent_already:
+        lines.append(f"\n✅ *Follow-Ups Already Sent ({len(sent_already)}):*")
+        for item, days in sent_already[:10]:
+            fu_date = item.get("followup_date", "?")
+            lines.append(f"  🔄 `{item['email']}` — sent {fu_date}")
+
+    send_message(chat_id,
+        "📩 *Follow-Up Tracker*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n" +
+        "\n".join(lines)
+    )
+
+
+def cmd_clear(chat_id):
+    queue = load_queue()
+    pending_count = sum(1 for x in queue if x.get("status") == "pending")
+
+    if pending_count == 0:
+        send_message(chat_id, "✅ *No pending emails to clear!*\n\nQueue is already clean.")
+        return
+
+    buttons = [[
+        {"text": f"🗑️ Yes, Clear {pending_count} Pending", "callback_data": "clearyes"},
+        {"text": "❌ No, Keep Them", "callback_data": "clearno"},
+    ]]
+
+    send_message(chat_id,
+        f"⚠️ *Clear Pending Queue?*\n\n"
+        f"This will remove *{pending_count}* pending emails.\n"
+        f"Already-sent emails will be preserved for follow-up tracking.\n\n"
+        f"Are you sure?",
+        reply_markup={"inline_keyboard": buttons}
+    )
+
+
+def cmd_cancel(chat_id, args):
+    if not args:
+        send_message(chat_id,
+            "Usage: `/cancel email@example.com`\n\n"
+            "This removes a specific email from the pending queue.")
+        return
+
+    target = args[0].lower().strip()
+    queue = load_queue()
+    found = False
+    new_queue = []
+    for item in queue:
+        if item.get("email", "").lower() == target and item.get("status") == "pending":
+            found = True
+            continue
+        new_queue.append(item)
+
+    if found:
+        save_queue(new_queue)
+        send_message(chat_id, f"🗑️ Removed `{target}` from pending queue.")
+    else:
+        send_message(chat_id, f"❌ `{target}` not found in pending queue.\n\nUse /queue to see current emails.")
+
+
+def cmd_preview(chat_id, args):
+    """Preview an email template."""
+    tid = args[0].lower() if args else "normal"
+    if tid not in TEMPLATES or tid == "followup":
+        available = [k for k in TEMPLATES if k != "followup"]
+        send_message(chat_id,
+            f"❌ Template `{tid}` not found.\n\n"
+            f"Available: {', '.join(available)}\n"
+            f"Example: `/preview research`")
+        return
+
+    subject, body = get_email_content(tid)
+    tinfo = TEMPLATES[tid]
+
+    # Truncate if too long for Telegram
+    if len(body) > 2500:
+        body = body[:2500] + "\n\n... (truncated)"
+
+    send_message(chat_id,
+        f"👁️ *Template Preview: {tinfo['emoji']} {tinfo['name']}*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📌 *Subject:*\n`{subject}`\n\n"
+        f"📝 *Body:*\n─────────────────────────\n"
+        f"{body}\n"
+        f"─────────────────────────\n\n"
+        f"📄 Resume: attached automatically"
+    )
+
+
+# ═══════════════════════════════════════════════════════════
+#  FLASK APP
+# ═══════════════════════════════════════════════════════════
 
 app = Flask(__name__)
 
 @app.route("/")
 def index():
+    queue = load_queue()
+    pending = sum(1 for x in queue if x.get("status") == "pending")
+    sent = sum(1 for x in queue if x.get("status") == "sent")
     return jsonify({
         "status": "alive",
-        "bot": "PA Webhook Bot",
-        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        "bot": "PA Email Bot v2.0",
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "queue": {"pending": pending, "sent": sent, "total": len(queue)}
     })
 
 @app.route("/telegram", methods=["POST"])
@@ -689,36 +1211,17 @@ def telegram_webhook():
         if str(chat_id) != str(CHAT_ID):
             return "ok", 200
 
-        # /start command
         text = msg.get("text", "")
-        if text == "/start":
-            send_message(chat_id,
-                         "👋 *Bot is LIVE on PythonAnywhere!*\n\n"
-                         "📸 Send a *screenshot* of a job post\n"
-                         "📝 Or *forward/paste text* with email addresses\n\n"
-                         "I'll extract emails and let you:\n"
-                         "🚀 *Send Instantly*\n"
-                         "⏰ *Schedule for 8 AM*\n"
-                         "📋 *Pick a template*\n\n"
-                         "No Replit needed — always on! ✅")
-            return "ok", 200
 
-        # /status command
-        if text == "/status":
-            queue = load_queue()
-            pending = [x for x in queue if x.get("status") == "pending"]
-            sent = [x for x in queue if x.get("status") == "sent"]
-            send_message(chat_id,
-                         f"📊 *Queue Status*\n"
-                         f"⏳ Pending: {len(pending)}\n"
-                         f"✅ Sent: {len(sent)}\n"
-                         f"📬 Total: {len(queue)}")
+        # Route commands
+        if text.startswith("/"):
+            handle_command(chat_id, text, msg.get("message_id", 0))
             return "ok", 200
 
         # Photo message
         if msg.get("photo"):
             photos = msg["photo"]
-            file_id = photos[-1]["file_id"]  # Highest res
+            file_id = photos[-1]["file_id"]
             caption = msg.get("caption", "")
             handle_photo(chat_id, file_id, msg.get("message_id", 0), caption)
             return "ok", 200
@@ -730,7 +1233,7 @@ def telegram_webhook():
                          msg.get("caption", ""))
             return "ok", 200
 
-        # Text message
+        # Text message (non-command)
         if text:
             handle_text(chat_id, text, msg.get("message_id", 0))
             return "ok", 200
@@ -784,6 +1287,21 @@ def api_update_status():
             item["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
     save_queue(queue)
     return "OK", 200
+
+
+@app.route("/api/stats", methods=["GET"])
+def api_stats():
+    """JSON stats endpoint."""
+    queue = load_queue()
+    return jsonify({
+        "total": len(queue),
+        "pending": sum(1 for x in queue if x.get("status") == "pending"),
+        "sent": sum(1 for x in queue if x.get("status") == "sent"),
+        "failed": sum(1 for x in queue if x.get("status") in ("failed", "permanently_failed")),
+        "bounced": sum(1 for x in queue if x.get("status") == "bounced"),
+        "followups_sent": sum(1 for x in queue if x.get("followup_sent")),
+        "replies_received": sum(1 for x in queue if x.get("response_received")),
+    })
 
 
 # Export for WSGI
